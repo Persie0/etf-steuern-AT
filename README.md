@@ -1,13 +1,39 @@
-# vinext-starter
+# ETF-Steuerassistent Österreich
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+Web-Rechenhilfe für österreichische Privatanleger mit Auslandsdepot. Die App
+ermittelt anhand einer ISIN die passende OeKB-Jahresmeldung, übernimmt die
+Steuerwerte je Anteil und berechnet daraus die relevanten E1kv-Kennzahlen.
+
+## Funktionen
+
+- direkter ISIN-Abruf über den öffentlichen OeKB-CSV-Export, ohne Login oder API-Key
+- automatische Auswahl der gültigen Jahresmeldung im gewählten Steuerjahr
+- tatsächliche Ausschüttungen inklusive zusätzlicher nicht gemeldeter Ausschüttungen
+- ausschüttungsgleiche Erträge, anrechenbare Quellensteuer und AK-Korrektur
+- automatische EUR-Umrechnung über den letzten verfügbaren ECB-Referenzkurs am Meldetag
+- Stückzahl-basierte Steuer- und E1kv-Berechnung für Melde- und Nicht-Meldefonds
+- lokaler Copy-Paste-Parser und Gemini-BYOK als eingeklappter Notfallweg
+- CSV-Nachweis für die eigene Dokumentation
+
+Die Anwendung ist eine Rechenhilfe und keine Steuerberatung. OeKB-Meldung,
+Depotauszug, Umrechnungskurs und aktuelles E1kv-Formular müssen vor Abgabe
+geprüft werden.
 
 ## Prerequisites
 
 - Node.js `>=22.13.0`
 - Linux with `flock`, `curl`, and GNU `timeout`
+
+## Entwicklung und Tests
+
+```bash
+npm ci
+npm run lint
+npm test
+```
+
+`npm test` baut die Vinext-Anwendung und führt die Parser-, Steuer- und
+Rendering-Tests aus.
 
 ## Sites Lifecycle
 

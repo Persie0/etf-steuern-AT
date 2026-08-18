@@ -7,6 +7,7 @@ import { OekbExtraction, parseOekbTextLocally } from "../lib/oekb-extractor";
 type NumberField = "units" | "eurRate" | "distributionsPerUnit" | "deemedIncomePerUnit" | "creditableTaxPerUnit" | "costAdjustmentPerUnit" | "saleProceeds" | "saleCostBasis" | "saleFees" | "openingPricePerUnit" | "closingPricePerUnit";
 type Values = Record<NumberField, number>;
 type Security = { identifier: string; identifierType: "ISIN" | "WKN"; name: string | null; ticker: string | null; exchange: string | null; verified: boolean };
+type AutomaticOekbResult = OekbExtraction & { reportId: string; source: string; sourceUrl: string; availableYears: string[] };
 
 const initialValues: Values = { units: 10, eurRate: 1, distributionsPerUnit: 0, deemedIncomePerUnit: 0, creditableTaxPerUnit: 0, costAdjustmentPerUnit: 0, saleProceeds: 0, saleCostBasis: 0, saleFees: 0, openingPricePerUnit: 0, closingPricePerUnit: 0 };
 const eur = new Intl.NumberFormat("de-AT", { style: "currency", currency: "EUR" });
@@ -83,6 +84,9 @@ export default function EtfTaxAssistant() {
   const [importState, setImportState] = useState<"idle" | "extracting" | "done" | "error">("idle");
   const [importResult, setImportResult] = useState<OekbExtraction | null>(null);
   const [importError, setImportError] = useState("");
+  const [oekbState, setOekbState] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [oekbResult, setOekbResult] = useState<AutomaticOekbResult | null>(null);
+  const [oekbError, setOekbError] = useState("");
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -115,18 +119,70 @@ export default function EtfTaxAssistant() {
     saleFees: showSale ? values.saleFees : 0,
   }), [status, values, showSale]);
   const oekbUrl = identifier.length === 12 ? `https://my.oekb.at/kapitalmarkt-services/kms-output/fonds-info/sd/af/f?isin=${encodeURIComponent(identifier)}` : "https://my.oekb.at/kapitalmarkt-services/kms-output/fonds-info/sd/af/f";
+  const perUnitCurrency = oekbResult?.currency ?? importResult?.currency ?? "FW";
   const setField = (field: NumberField, value: number) => setValues((current) => ({ ...current, [field]: value }));
+
+  async function addEurRate(extracted: OekbExtraction): Promise<OekbExtraction> {
+    if (extracted.eurRate !== null || !extracted.currency || !extracted.reportDate) return extracted;
+    const response = await fetch(`/api/fx?currency=${encodeURIComponent(extracted.currency)}&date=${encodeURIComponent(extracted.reportDate)}`);
+    const fx = await response.json() as { rate?: number; date?: string; source?: string };
+    if (!response.ok || typeof fx.rate !== "number") {
+      return { ...extracted, warnings: [...extracted.warnings, "Der EUR-Umrechnungskurs konnte nicht automatisch ergänzt werden. Vor der Berechnung bitte manuell prüfen."] };
+    }
+    return {
+      ...extracted,
+      eurRate: fx.rate,
+      exchangeRateDate: fx.date,
+      exchangeRateSource: fx.source,
+      warnings: [...extracted.warnings, "Der verwendete ECB-Referenzkurs ist vor Abgabe mit der steuerlich maßgeblichen Umrechnungsmethode zu prüfen."],
+    };
+  }
+
+  async function loadOekbData(normalizedIdentifier = identifier.trim().toUpperCase()) {
+    if (!/^[A-Z]{2}[A-Z0-9]{9}\d$/.test(normalizedIdentifier)) {
+      setOekbError("Der automatische OeKB-Abruf benötigt eine 12-stellige ISIN; eine WKN reicht dafür nicht.");
+      setOekbState("error");
+      return null;
+    }
+    setOekbState("loading"); setOekbError(""); setOekbResult(null); setShowResults(false);
+    try {
+      const response = await fetch(`/api/oekb?isin=${encodeURIComponent(normalizedIdentifier)}&taxYear=${encodeURIComponent(taxYear)}`);
+      const data = await response.json() as AutomaticOekbResult & { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "OeKB-Abruf fehlgeschlagen.");
+      const enriched = await addEurRate(data) as AutomaticOekbResult;
+      applyExtraction(enriched);
+      setOekbResult(enriched);
+      setOekbState("done");
+      setSecurity({
+        identifier: normalizedIdentifier,
+        identifierType: "ISIN",
+        name: enriched.fundName,
+        ticker: null,
+        exchange: null,
+        verified: true,
+      });
+      return enriched;
+    } catch (error) {
+      setOekbError(error instanceof Error ? error.message : "OeKB-Abruf fehlgeschlagen.");
+      setOekbState("error");
+      return null;
+    }
+  }
 
   async function lookup(event: FormEvent) {
     event.preventDefault();
     const normalized = identifier.trim().toUpperCase();
     setIdentifier(normalized); setLookupState("loading"); setShowResults(false);
-    try {
-      const response = await fetch("/api/security", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ identifier: normalized }) });
-      const data = await response.json() as Security & { error?: string };
-      if (!response.ok) throw new Error(data.error ?? "Lookup fehlgeschlagen");
-      setSecurity(data); setLookupState("done");
-    } catch { setSecurity(null); setLookupState("error"); }
+    const securityPromise = fetch("/api/security", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ identifier: normalized }) })
+      .then(async (response) => {
+        const data = await response.json() as Security & { error?: string };
+        if (!response.ok) throw new Error(data.error ?? "Lookup fehlgeschlagen");
+        return data;
+      });
+    const [oekbLookup, securityResult] = await Promise.allSettled([loadOekbData(normalized), securityPromise]);
+    if (securityResult.status === "fulfilled") setSecurity(securityResult.value);
+    else if (oekbLookup.status !== "fulfilled" || !oekbLookup.value) setSecurity(null);
+    setLookupState(securityResult.status === "fulfilled" || /^[A-Z]{2}[A-Z0-9]{9}\d$/.test(normalized) ? "done" : "error");
   }
 
   function applyExtraction(extracted: OekbExtraction) {
@@ -166,13 +222,7 @@ export default function EtfTaxAssistant() {
         extracted = { ...local, warnings: [...local.warnings, "Ohne Gemini-Key wurde nur die konservative lokale Erkennung verwendet."] };
       }
 
-      if (extracted.eurRate === null && extracted.currency && extracted.reportDate) {
-        const response = await fetch(`/api/fx?currency=${encodeURIComponent(extracted.currency)}&date=${encodeURIComponent(extracted.reportDate)}`);
-        const fx = await response.json() as { rate?: number; date?: string; source?: string };
-        if (response.ok && typeof fx.rate === "number") {
-          extracted = { ...extracted, eurRate: fx.rate, exchangeRateDate: fx.date, exchangeRateSource: fx.source, warnings: [...extracted.warnings, "Kein OeKB-Kurs erkannt: Der ergänzte ECB-Referenzkurs ist vor Abgabe mit der steuerlich maßgeblichen Umrechnung zu prüfen."] };
-        }
-      }
+      extracted = await addEurRate(extracted);
 
       const found = [extracted.actualDistributionPerUnit, extracted.deemedIncomePerUnit, extracted.creditableForeignTaxPerUnit, extracted.costBasisAdjustmentPerUnit].filter((value) => value !== null).length;
       if (found === 0) throw new Error("Keine der vier Steuerkennzahlen wurde eindeutig erkannt. Bitte mehr Inhalt kopieren oder Gemini verwenden.");
@@ -206,23 +256,32 @@ export default function EtfTaxAssistant() {
     </section>
 
     <section className="workspace" id="rechner">
-      <div className="stepper" aria-label="Fortschritt"><div className="active"><b>1</b><span>ETF finden<small>ISIN oder WKN</small></span></div><i /><div className={lookupState === "done" ? "active" : ""}><b>2</b><span>Steuerdaten<small>OeKB-Werte</small></span></div><i /><div className={showResults ? "active" : ""}><b>3</b><span>Ergebnis<small>E1kv & Steuer</small></span></div></div>
+      <div className="stepper" aria-label="Fortschritt"><div className="active"><b>1</b><span>ETF finden<small>ISIN oder WKN</small></span></div><i /><div className={oekbState === "done" ? "active" : ""}><b>2</b><span>Steuerdaten<small>OeKB-Werte</small></span></div><i /><div className={showResults ? "active" : ""}><b>3</b><span>Ergebnis<small>E1kv & Steuer</small></span></div></div>
       <div className="calculator-grid">
         <section className="card form-card">
           <div className="card-heading"><div><span className="section-number">01</span><h2>Welchen ETF hältst du?</h2></div><span className="source-badge">Wertpapier-Abgleich</span></div>
           <form className="lookup" onSubmit={lookup}>
-            <label><span>ISIN oder WKN</span><div className="search-input"><span>⌕</span><input value={identifier} onChange={(e) => setIdentifier(e.target.value.toUpperCase())} placeholder="z. B. IE00B4L5Y983" aria-label="ISIN oder WKN" />{identifier && <button type="button" onClick={() => setIdentifier("")} aria-label="Eingabe leeren">×</button>}</div></label>
-            <label className="year-select"><span>Steuerjahr</span><select value={taxYear} onChange={(e) => setTaxYear(e.target.value)}><option>2025</option><option>2024</option><option>2023</option></select></label>
-            <button className="primary" disabled={lookupState === "loading"}>{lookupState === "loading" ? "Prüfe …" : "ETF prüfen"}<span>→</span></button>
+            <label><span>ISIN oder WKN</span><div className="search-input"><span>⌕</span><input value={identifier} onChange={(e) => { setIdentifier(e.target.value.toUpperCase()); setOekbState("idle"); setLookupState("idle"); }} placeholder="z. B. IE00B4L5Y983" aria-label="ISIN oder WKN" />{identifier && <button type="button" onClick={() => { setIdentifier(""); setOekbState("idle"); setLookupState("idle"); }} aria-label="Eingabe leeren">×</button>}</div></label>
+            <label className="year-select"><span>Steuerjahr</span><select value={taxYear} onChange={(e) => { setTaxYear(e.target.value); setOekbState("idle"); }}><option>2026</option><option>2025</option><option>2024</option><option>2023</option></select></label>
+            <button className="primary" disabled={lookupState === "loading"}>{lookupState === "loading" ? "Lade …" : "ETF & OeKB laden"}<span>→</span></button>
           </form>
           {lookupState === "error" && <p className="error">Die Kennung ist ungültig oder konnte gerade nicht geprüft werden.</p>}
           {lookupState === "done" && <div className="security-result"><div className="fund-avatar">ETF</div><div><strong>{security?.name ?? "Wertpapier erkannt"}</strong><span>{security?.identifierType} {identifier}{security?.ticker ? ` · ${security.ticker}` : ""}</span></div><span className={security?.verified ? "verified" : "unverified"}>{security?.verified ? "✓ erkannt" : "manuell prüfen"}</span></div>}
 
           <div className="divider" />
           <div className="card-heading compact"><div><span className="section-number">02</span><h2>OeKB-Steuerdaten</h2></div><a className="external" href={oekbUrl} target="_blank" rel="noreferrer">Offizielle Meldung öffnen ↗</a></div>
-          <p className="helper">Übernimm die Werte der Jahresmeldung. Beträge dürfen in der Fondswährung bleiben — der EUR-Kurs rechnet sie gesammelt um.</p>
-          <section className="smart-import" aria-label="OeKB-Daten automatisch übernehmen">
-            <div className="smart-import-title"><div><span className="spark">✦</span><div><strong>Ganze OeKB-Seite automatisch auslesen</strong><small>Lokal vorgeprüft · optional präziser mit deinem Gemini-Key</small></div></div><span className="byok-badge">BYOK</span></div>
+          <p className="helper">Die Jahresmeldung und die vier Steuerwerte werden direkt aus dem öffentlichen OeKB-CSV-Export übernommen. Beträge bleiben in Fondswährung; der EUR-Kurs wird automatisch ergänzt.</p>
+          <section className="oekb-auto" aria-label="OeKB-Daten per ISIN automatisch laden">
+            <div className="smart-import-title"><div><span className="spark">Ö</span><div><strong>Direkt per ISIN laden</strong><small>OeKB-Melde-ID · Jahresmeldung · ECB-Referenzkurs</small></div></div><span className="auto-badge">KOSTENLOS</span></div>
+            <button className="oekb-button" type="button" onClick={() => loadOekbData()} disabled={oekbState === "loading"}>{oekbState === "loading" ? "OeKB-Daten werden geladen …" : "OeKB-Steuerdaten automatisch laden"}<span>→</span></button>
+            <p className="privacy-copy">Kein Login und kein API-Key. Abfrage erfolgt erst nach deinem Klick und nur für die eingegebene ISIN.</p>
+            {oekbState === "error" && <div className="import-message error-message"><b>Automatischer OeKB-Abruf nicht abgeschlossen</b><span>{oekbError}</span></div>}
+            {oekbState === "done" && oekbResult && <div className="import-message success-message"><div><b>✓ Offizielle Jahresmeldung übernommen</b><span>{oekbResult.source}{oekbResult.exchangeRateSource ? ` · Kurs: ${oekbResult.exchangeRateSource} vom ${oekbResult.exchangeRateDate}` : ""}</span></div><div className="import-chips"><span>Melde-ID {oekbResult.reportId}</span><span>{oekbResult.currency ?? "Währung offen"}</span><span>{oekbResult.reportDate ?? "Meldedatum offen"}</span><span>{[oekbResult.actualDistributionPerUnit, oekbResult.deemedIncomePerUnit, oekbResult.creditableForeignTaxPerUnit, oekbResult.costBasisAdjustmentPerUnit].filter((value) => value !== null).length}/4 Steuerwerte</span></div>{oekbResult.warnings.length > 0 && <details><summary>{oekbResult.warnings.length} Prüfhinweis{oekbResult.warnings.length === 1 ? "" : "e"}</summary><ul>{oekbResult.warnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}</ul></details>}</div>}
+          </section>
+          <details className="fallback-import">
+            <summary><span>Notfall-Import per Copy-Paste / Gemini</span><small>Nur falls der öffentliche OeKB-Export vorübergehend nicht erreichbar ist</small></summary>
+            <section className="smart-import" aria-label="OeKB-Seite als Notfall importieren">
+            <div className="smart-import-title"><div><span className="spark">✦</span><div><strong>Ganze OeKB-Seite auslesen</strong><small>Lokal vorgeprüft · optional präziser mit deinem Gemini-Key</small></div></div><span className="byok-badge">BYOK</span></div>
             <label className="paste-field"><span>Kopierten Seiteninhalt einfügen</span><textarea value={pastedOekb} onChange={(event) => { setPastedOekb(event.target.value); setImportState("idle"); }} placeholder="OeKB-Seite öffnen, alles markieren (Strg/Cmd + A), kopieren und hier einfügen …" /></label>
             <div className="key-row">
               <label><span>Gemini API-Key <em>optional</em></span><div className="key-input"><input type={showGeminiKey ? "text" : "password"} value={geminiKey} onChange={(event) => setGeminiKey(event.target.value)} placeholder="AIza…" autoComplete="off" /><button type="button" onClick={() => setShowGeminiKey((value) => !value)}>{showGeminiKey ? "verbergen" : "anzeigen"}</button></div></label>
@@ -232,12 +291,13 @@ export default function EtfTaxAssistant() {
             <p className="privacy-copy">Dein Key wird direkt von diesem Browser an Google gesendet, nie an unseren Server. Ohne Key läuft nur die lokale Erkennung.</p>
             {importState === "error" && <div className="import-message error-message"><b>Import nicht abgeschlossen</b><span>{importError}</span></div>}
             {importState === "done" && importResult && <div className="import-message success-message"><div><b>✓ Werte übernommen</b><span>{importResult.model ? `Gemini ${importResult.model.replace("gemini-", "")} + lokale Prüfung` : "Lokale Erkennung"}{importResult.exchangeRateSource ? ` · Kurs: ${importResult.exchangeRateSource} vom ${importResult.exchangeRateDate}` : ""}</span></div><div className="import-chips"><span>{importResult.currency ?? "Währung offen"}</span><span>{importResult.reportDate ?? "Meldedatum offen"}</span><span>{[importResult.actualDistributionPerUnit, importResult.deemedIncomePerUnit, importResult.creditableForeignTaxPerUnit, importResult.costBasisAdjustmentPerUnit].filter((value) => value !== null).length}/4 Steuerwerte</span></div>{importResult.warnings.length > 0 && <details><summary>{importResult.warnings.length} Prüfhinweis{importResult.warnings.length === 1 ? "" : "e"}</summary><ul>{importResult.warnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}</ul></details>}</div>}
-          </section>
+            </section>
+          </details>
           <div className="segmented" role="group" aria-label="Fondsstatus"><button className={status === "reporting" ? "selected" : ""} onClick={() => setStatus("reporting")} type="button"><b>Meldefonds</b><small>OeKB-Jahresmeldung vorhanden</small></button><button className={status === "non-reporting" ? "selected warning" : ""} onClick={() => setStatus("non-reporting")} type="button"><b>Nicht-Meldefonds</b><small>Pauschalbesteuerung</small></button></div>
           <div className="field-grid">
             <Field label="Stückzahl am Meldetag" value={values.units} onChange={(v) => setField("units", v)} suffix="Stk." step="0.000001" hint="Nicht die heutige Stückzahl, sondern dein Bestand am veröffentlichten Meldetag." />
             <Field label="EUR-Umrechnungskurs" value={values.eurRate} onChange={(v) => setField("eurRate", v)} suffix="EUR / FW" hint="Bei OeKB-Werten in EUR auf 1 lassen; sonst EUR-Wert einer Einheit Fondswährung am Meldetag." />
-            {status === "reporting" ? <><Field label="Tatsächliche Ausschüttung je Anteil" value={values.distributionsPerUnit} onChange={(v) => setField("distributionsPerUnit", v)} hint="Steuerpflichtige tatsächliche Ausschüttungen laut Meldung bzw. Ausschüttungsnachweis." /><Field label="Ausschüttungsgleiche Erträge je Anteil" value={values.deemedIncomePerUnit} onChange={(v) => setField("deemedIncomePerUnit", v)} hint="OeKB-Wert der ausschüttungsgleichen Erträge für Privatanleger." /><Field label="Anrechenbare Quellensteuer je Anteil" value={values.creditableTaxPerUnit} onChange={(v) => setField("creditableTaxPerUnit", v)} hint="Nur laut OeKB anrechenbarer Betrag, nicht automatisch jede ausländische Steuer." /><Field label="Korrektur Anschaffungskosten je Anteil" value={values.costAdjustmentPerUnit} onChange={(v) => setField("costAdjustmentPerUnit", v)} hint="Für den späteren Verkaufsgewinn fortschreiben; kann laut Meldung auch negativ sein." allowNegative /></> : <><Field label="Rücknahmepreis Jahresanfang" value={values.openingPricePerUnit} onChange={(v) => setField("openingPricePerUnit", v)} hint="Preis zu Beginn des Kalenderjahres; bei unterjährigem Kauf grundsätzlich der Anschaffungspreis." /><Field label="Rücknahmepreis Jahresende" value={values.closingPricePerUnit} onChange={(v) => setField("closingPricePerUnit", v)} hint="Letzter im Kalenderjahr festgesetzter Rücknahmepreis." /><Field label="Tatsächliche Ausschüttung je Anteil" value={values.distributionsPerUnit} onChange={(v) => setField("distributionsPerUnit", v)} /></>}
+            {status === "reporting" ? <><Field label="Tatsächliche Ausschüttung je Anteil" value={values.distributionsPerUnit} onChange={(v) => setField("distributionsPerUnit", v)} suffix={perUnitCurrency} hint="Steuerpflichtige tatsächliche Ausschüttungen laut Meldung bzw. Ausschüttungsnachweis." /><Field label="Ausschüttungsgleiche Erträge je Anteil" value={values.deemedIncomePerUnit} onChange={(v) => setField("deemedIncomePerUnit", v)} suffix={perUnitCurrency} hint="OeKB-Wert der ausschüttungsgleichen Erträge für Privatanleger." /><Field label="Anrechenbare Quellensteuer je Anteil" value={values.creditableTaxPerUnit} onChange={(v) => setField("creditableTaxPerUnit", v)} suffix={perUnitCurrency} hint="Nur laut OeKB anrechenbarer Betrag, nicht automatisch jede ausländische Steuer." /><Field label="Korrektur Anschaffungskosten je Anteil" value={values.costAdjustmentPerUnit} onChange={(v) => setField("costAdjustmentPerUnit", v)} suffix={perUnitCurrency} hint="Für den späteren Verkaufsgewinn fortschreiben; kann laut Meldung auch negativ sein." allowNegative /></> : <><Field label="Rücknahmepreis Jahresanfang" value={values.openingPricePerUnit} onChange={(v) => setField("openingPricePerUnit", v)} hint="Preis zu Beginn des Kalenderjahres; bei unterjährigem Kauf grundsätzlich der Anschaffungspreis." /><Field label="Rücknahmepreis Jahresende" value={values.closingPricePerUnit} onChange={(v) => setField("closingPricePerUnit", v)} hint="Letzter im Kalenderjahr festgesetzter Rücknahmepreis." /><Field label="Tatsächliche Ausschüttung je Anteil" value={values.distributionsPerUnit} onChange={(v) => setField("distributionsPerUnit", v)} /></>}
           </div>
           <button className="sale-toggle" type="button" onClick={() => setShowSale((value) => !value)}><span>{showSale ? "−" : "+"}</span> ETF im Steuerjahr verkauft?</button>
           {showSale && <div className="field-grid sale-fields"><Field label="Verkaufserlös gesamt" value={values.saleProceeds} onChange={(v) => setField("saleProceeds", v)} /><Field label="Fortgeschriebene Anschaffungskosten" value={values.saleCostBasis} onChange={(v) => setField("saleCostBasis", v)} hint="Kaufkosten zuzüglich aller bisherigen OeKB-AK-Korrekturen." /><Field label="Verkaufsspesen" value={values.saleFees} onChange={(v) => setField("saleFees", v)} /></div>}

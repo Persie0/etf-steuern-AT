@@ -32,4 +32,7 @@ test("renders development preview metadata", async () => {
   const html = await response.text();
   assert.match(html, developmentPreviewMeta);
   assert.match(html, /OeKB-Steuerdaten automatisch laden/);
+  assert.match(html, /Deine einzige Pflichtangabe/);
+  assert.match(html, /OeKB-Meldetag \/ steuerlicher Stichtag/);
+  assert.match(html, /Bitte zuerst Stückzahl eingeben/);
 });

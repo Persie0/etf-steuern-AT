@@ -9,9 +9,16 @@ type Values = Record<NumberField, number>;
 type Security = { identifier: string; identifierType: "ISIN" | "WKN"; name: string | null; ticker: string | null; exchange: string | null; verified: boolean };
 type AutomaticOekbResult = OekbExtraction & { reportId: string; source: string; sourceUrl: string; availableYears: string[] };
 
-const initialValues: Values = { units: 10, eurRate: 1, distributionsPerUnit: 0, deemedIncomePerUnit: 0, creditableTaxPerUnit: 0, costAdjustmentPerUnit: 0, saleProceeds: 0, saleCostBasis: 0, saleFees: 0, openingPricePerUnit: 0, closingPricePerUnit: 0 };
+const initialValues: Values = { units: 0, eurRate: 1, distributionsPerUnit: 0, deemedIncomePerUnit: 0, creditableTaxPerUnit: 0, costAdjustmentPerUnit: 0, saleProceeds: 0, saleCostBasis: 0, saleFees: 0, openingPricePerUnit: 0, closingPricePerUnit: 0 };
 const eur = new Intl.NumberFormat("de-AT", { style: "currency", currency: "EUR" });
+const reportDateFormatter = new Intl.DateTimeFormat("de-AT", { weekday: "long", day: "2-digit", month: "long", year: "numeric", timeZone: "UTC" });
 const geminiModels = ["gemini-3-flash-preview", "gemini-3.7-flash", "gemini-2.5-flash-lite"];
+
+function formatReportDate(date: string | null | undefined) {
+  if (!date) return null;
+  const parsed = new Date(`${date}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime()) ? date : reportDateFormatter.format(parsed);
+}
 
 const extractionSchema = {
   type: "object",
@@ -60,9 +67,9 @@ function Info({ children }: { children: React.ReactNode }) {
   return <span className="info" title={String(children)}>i</span>;
 }
 
-function Field({ label, value, onChange, suffix = "EUR", hint, step = "0.0001", allowNegative = false }: { label: string; value: number; onChange: (value: number) => void; suffix?: string; hint?: string; step?: string; allowNegative?: boolean }) {
-  return <label className="field">
-    <span>{label} {hint && <Info>{hint}</Info>}</span>
+function Field({ label, value, onChange, suffix = "EUR", hint, step = "0.0001", allowNegative = false, imported = false, importLabel = "OeKB importiert", className = "" }: { label: string; value: number; onChange: (value: number) => void; suffix?: string; hint?: string; step?: string; allowNegative?: boolean; imported?: boolean; importLabel?: string; className?: string }) {
+  return <label className={`field ${imported ? "field-imported" : ""} ${className}`.trim()}>
+    <span className="field-label-row"><span>{label} {hint && <Info>{hint}</Info>}</span>{imported && <em className="imported-pill">✓ {importLabel}</em>}</span>
     <div className="input-shell"><input inputMode="decimal" min={allowNegative ? undefined : "0"} step={step} type="number" value={value} onChange={(event) => onChange(Number(event.target.value) || 0)} /><em>{suffix}</em></div>
   </label>;
 }
@@ -120,6 +127,10 @@ export default function EtfTaxAssistant() {
   }), [status, values, showSale]);
   const oekbUrl = identifier.length === 12 ? `https://my.oekb.at/kapitalmarkt-services/kms-output/fonds-info/sd/af/f?isin=${encodeURIComponent(identifier)}` : "https://my.oekb.at/kapitalmarkt-services/kms-output/fonds-info/sd/af/f";
   const perUnitCurrency = oekbResult?.currency ?? importResult?.currency ?? "FW";
+  const activeImport = oekbState === "done" ? oekbResult : importState === "done" ? importResult : null;
+  const formattedReportDate = formatReportDate(activeImport?.reportDate);
+  const importedValue = (value: number | null | undefined) => activeImport !== null && value !== null && value !== undefined;
+  const unitsComplete = values.units > 0;
   const setField = (field: NumberField, value: number) => setValues((current) => ({ ...current, [field]: value }));
 
   async function addEurRate(extracted: OekbExtraction): Promise<OekbExtraction> {
@@ -294,14 +305,20 @@ export default function EtfTaxAssistant() {
             </section>
           </details>
           <div className="segmented" role="group" aria-label="Fondsstatus"><button className={status === "reporting" ? "selected" : ""} onClick={() => setStatus("reporting")} type="button"><b>Meldefonds</b><small>OeKB-Jahresmeldung vorhanden</small></button><button className={status === "non-reporting" ? "selected warning" : ""} onClick={() => setStatus("non-reporting")} type="button"><b>Nicht-Meldefonds</b><small>Pauschalbesteuerung</small></button></div>
-          <div className="field-grid">
-            <Field label="Stückzahl am Meldetag" value={values.units} onChange={(v) => setField("units", v)} suffix="Stk." step="0.000001" hint="Nicht die heutige Stückzahl, sondern dein Bestand am veröffentlichten Meldetag." />
-            <Field label="EUR-Umrechnungskurs" value={values.eurRate} onChange={(v) => setField("eurRate", v)} suffix="EUR / FW" hint="Bei OeKB-Werten in EUR auf 1 lassen; sonst EUR-Wert einer Einheit Fondswährung am Meldetag." />
-            {status === "reporting" ? <><Field label="Tatsächliche Ausschüttung je Anteil" value={values.distributionsPerUnit} onChange={(v) => setField("distributionsPerUnit", v)} suffix={perUnitCurrency} hint="Steuerpflichtige tatsächliche Ausschüttungen laut Meldung bzw. Ausschüttungsnachweis." /><Field label="Ausschüttungsgleiche Erträge je Anteil" value={values.deemedIncomePerUnit} onChange={(v) => setField("deemedIncomePerUnit", v)} suffix={perUnitCurrency} hint="OeKB-Wert der ausschüttungsgleichen Erträge für Privatanleger." /><Field label="Anrechenbare Quellensteuer je Anteil" value={values.creditableTaxPerUnit} onChange={(v) => setField("creditableTaxPerUnit", v)} suffix={perUnitCurrency} hint="Nur laut OeKB anrechenbarer Betrag, nicht automatisch jede ausländische Steuer." /><Field label="Korrektur Anschaffungskosten je Anteil" value={values.costAdjustmentPerUnit} onChange={(v) => setField("costAdjustmentPerUnit", v)} suffix={perUnitCurrency} hint="Für den späteren Verkaufsgewinn fortschreiben; kann laut Meldung auch negativ sein." allowNegative /></> : <><Field label="Rücknahmepreis Jahresanfang" value={values.openingPricePerUnit} onChange={(v) => setField("openingPricePerUnit", v)} hint="Preis zu Beginn des Kalenderjahres; bei unterjährigem Kauf grundsätzlich der Anschaffungspreis." /><Field label="Rücknahmepreis Jahresende" value={values.closingPricePerUnit} onChange={(v) => setField("closingPricePerUnit", v)} hint="Letzter im Kalenderjahr festgesetzter Rücknahmepreis." /><Field label="Tatsächliche Ausschüttung je Anteil" value={values.distributionsPerUnit} onChange={(v) => setField("distributionsPerUnit", v)} /></>}
+          <section className={`holding-entry ${unitsComplete ? "complete" : ""}`} aria-label="Erforderliche Stückzahl">
+            <div className="holding-entry-head"><div><span className="action-kicker">Deine einzige Pflichtangabe</span><h3>{status === "reporting" ? "Wie viele Anteile hattest du am Meldetag?" : "Wie viele Anteile sind zu berücksichtigen?"}</h3></div><span className="manual-badge">{unitsComplete ? "✓ EINGETRAGEN" : "JETZT EINGEBEN"}</span></div>
+            {status === "reporting" && <div className={`holding-date ${formattedReportDate ? "known" : ""}`}><span>OeKB-Meldetag / steuerlicher Stichtag</span><strong>{formattedReportDate ?? "Wird nach dem OeKB-Import angezeigt"}</strong>{activeImport?.reportDate && <small>{activeImport.reportDate} · Bestand im Depotauszug an diesem Tag prüfen</small>}</div>}
+            <Field className="units-field" label="Deine Stückzahl an genau diesem Tag" value={values.units} onChange={(v) => setField("units", v)} suffix="Stk." step="0.000001" hint="Nicht die heutige Stückzahl, sondern dein Bestand am veröffentlichten Meldetag." />
+            <p className="holding-help">{status === "reporting" ? "Nicht den heutigen Bestand eintragen: Maßgeblich ist deine Stückzahl am oben genannten Meldetag." : "Trage die für das gewählte Steuerjahr maßgebliche Stückzahl ein."}</p>
+          </section>
+          <div className="imported-values-heading"><div><span>{status === "reporting" ? "Automatisch übernommene Werte" : "Weitere Berechnungswerte"}</span><small>{status === "reporting" ? "Nach dem OeKB-Import sind diese Felder bereits ausgefüllt; du kannst sie weiterhin prüfen und korrigieren." : "Für Nicht-Meldefonds sind zusätzliche Kurswerte erforderlich."}</small></div>{status === "reporting" && activeImport && <b>✓ Import abgeschlossen</b>}</div>
+          <div className="field-grid imported-field-grid">
+            <Field label="EUR-Umrechnungskurs" value={values.eurRate} onChange={(v) => setField("eurRate", v)} suffix="EUR / FW" hint="Bei OeKB-Werten in EUR auf 1 lassen; sonst EUR-Wert einer Einheit Fondswährung am Meldetag." imported={status === "reporting" && importedValue(activeImport?.eurRate)} importLabel={activeImport?.exchangeRateSource ? "ECB ergänzt" : "importiert"} />
+            {status === "reporting" ? <><Field label="Tatsächliche Ausschüttung je Anteil" value={values.distributionsPerUnit} onChange={(v) => setField("distributionsPerUnit", v)} suffix={perUnitCurrency} hint="Steuerpflichtige tatsächliche Ausschüttungen laut Meldung bzw. Ausschüttungsnachweis." imported={importedValue(activeImport?.actualDistributionPerUnit)} /><Field label="Ausschüttungsgleiche Erträge je Anteil" value={values.deemedIncomePerUnit} onChange={(v) => setField("deemedIncomePerUnit", v)} suffix={perUnitCurrency} hint="OeKB-Wert der ausschüttungsgleichen Erträge für Privatanleger." imported={importedValue(activeImport?.deemedIncomePerUnit)} /><Field label="Anrechenbare Quellensteuer je Anteil" value={values.creditableTaxPerUnit} onChange={(v) => setField("creditableTaxPerUnit", v)} suffix={perUnitCurrency} hint="Nur laut OeKB anrechenbarer Betrag, nicht automatisch jede ausländische Steuer." imported={importedValue(activeImport?.creditableForeignTaxPerUnit)} /><Field label="Korrektur Anschaffungskosten je Anteil" value={values.costAdjustmentPerUnit} onChange={(v) => setField("costAdjustmentPerUnit", v)} suffix={perUnitCurrency} hint="Für den späteren Verkaufsgewinn fortschreiben; kann laut Meldung auch negativ sein." allowNegative imported={importedValue(activeImport?.costBasisAdjustmentPerUnit)} /></> : <><Field label="Rücknahmepreis Jahresanfang" value={values.openingPricePerUnit} onChange={(v) => setField("openingPricePerUnit", v)} hint="Preis zu Beginn des Kalenderjahres; bei unterjährigem Kauf grundsätzlich der Anschaffungspreis." /><Field label="Rücknahmepreis Jahresende" value={values.closingPricePerUnit} onChange={(v) => setField("closingPricePerUnit", v)} hint="Letzter im Kalenderjahr festgesetzter Rücknahmepreis." /><Field label="Tatsächliche Ausschüttung je Anteil" value={values.distributionsPerUnit} onChange={(v) => setField("distributionsPerUnit", v)} /></>}
           </div>
           <button className="sale-toggle" type="button" onClick={() => setShowSale((value) => !value)}><span>{showSale ? "−" : "+"}</span> ETF im Steuerjahr verkauft?</button>
           {showSale && <div className="field-grid sale-fields"><Field label="Verkaufserlös gesamt" value={values.saleProceeds} onChange={(v) => setField("saleProceeds", v)} /><Field label="Fortgeschriebene Anschaffungskosten" value={values.saleCostBasis} onChange={(v) => setField("saleCostBasis", v)} hint="Kaufkosten zuzüglich aller bisherigen OeKB-AK-Korrekturen." /><Field label="Verkaufsspesen" value={values.saleFees} onChange={(v) => setField("saleFees", v)} /></div>}
-          <button className="calculate" type="button" onClick={() => setShowResults(true)}>Steuer & Kennzahlen berechnen <span>→</span></button><p className="local-note">🔒 Entwurf wird nur in diesem Browser gespeichert.</p>
+          <button className="calculate" type="button" onClick={() => setShowResults(true)} disabled={!unitsComplete}>{unitsComplete ? "Steuer & Kennzahlen berechnen" : "Bitte zuerst Stückzahl eingeben"} <span>→</span></button><p className="local-note">🔒 Entwurf wird nur in diesem Browser gespeichert.</p>
         </section>
 
         <aside className="results-column">

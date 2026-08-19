@@ -1,0 +1,50 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { calculateEtfTax } from "../lib/tax.ts";
+
+const base = {
+  status: "reporting" as const,
+  units: 10,
+  eurRate: 1,
+  distributionsPerUnit: 1,
+  deemedIncomePerUnit: 2,
+  creditableTaxPerUnit: 0.1,
+  costAdjustmentPerUnit: 3,
+  saleProceeds: 0,
+  saleCostBasis: 0,
+  saleFees: 0,
+  openingPricePerUnit: 0,
+  closingPricePerUnit: 0,
+};
+
+test("maps reporting-fund values to E1kv codes", () => {
+  const result = calculateEtfTax(base);
+  assert.deepEqual({ kz898: result.kz898, kz937: result.kz937, kz998: result.kz998 }, { kz898: 10, kz937: 20, kz998: 1 });
+  assert.equal(result.taxableTotal, 30);
+  assert.equal(result.estimatedTax, 7.25);
+  assert.equal(result.costAdjustment, 30);
+});
+
+test("converts per-unit foreign-currency values once", () => {
+  const result = calculateEtfTax({ ...base, eurRate: 0.9 });
+  assert.equal(result.kz898, 9);
+  assert.equal(result.kz937, 18);
+  assert.equal(result.costAdjustment, 27);
+});
+
+test("uses the higher non-reporting-fund lump sum", () => {
+  const result = calculateEtfTax({ ...base, status: "non-reporting", distributionsPerUnit: 1, openingPricePerUnit: 100, closingPricePerUnit: 110 });
+  assert.equal(result.nonReportingLumpSum, 110);
+  assert.equal(result.taxableTotal, 120);
+  assert.equal(result.estimatedTax, 33);
+});
+
+test("separates sale gains and losses", () => {
+  const gain = calculateEtfTax({ ...base, saleProceeds: 1000, saleCostBasis: 800, saleFees: 10 });
+  assert.equal(gain.kz994, 190);
+  assert.equal(gain.kz892, 0);
+  const loss = calculateEtfTax({ ...base, saleProceeds: 700, saleCostBasis: 800, saleFees: 10 });
+  assert.equal(loss.kz994, 0);
+  assert.equal(loss.kz892, 110);
+});
+

@@ -43,8 +43,14 @@ test("renders development preview metadata", async () => {
   assert.match(html, /Anschaffungskosten-Verlauf/);
   assert.match(html, /Verkaufs-Anschaffungskosten übernehmen/);
   assert.match(html, /So gehst du in den Folgejahren vor/);
-  assert.match(html, /Vom ETF-Kauf bis zum Verkauf/);
-  assert.match(html, /Kauf, drei Jahre halten, dann verkaufen/);
-  assert.match(html, /20 ETF-Anteile × 100 € = 2.000 €/);
+  assert.match(html, /Vanguard FTSE All-World UCITS ETF/);
+  assert.match(html, /IE00BK5BQT80/);
+  assert.match(html, /416424 · 488736 · 564233/);
+  assert.match(html, /1,4369 × 10 × 0,917852 = 13,19 €/);
+  assert.match(html, /Was kommt wohin/);
+  assert.match(html, /KZ 937/);
+  assert.match(html, /Anschaffungskosten-Korrektur/);
+  assert.match(html, /Private Transaktionsspesen/);
+  assert.match(html, /Begriffe ohne Steuerdeutsch/);
   assert.match(html, /Zum ETF-Rechner/);
 });

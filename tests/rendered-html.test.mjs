@@ -37,6 +37,11 @@ test("renders development preview metadata", async () => {
   assert.match(html, /Bitte zuerst Stückzahl eingeben/);
   assert.match(html, /Dein Steuer-Dashboard/);
   assert.match(html, /Aktuelle Holdings/);
+  assert.match(html, /Deine Datenzentrale/);
+  assert.match(html, /Broker-Abrechnungen importieren/);
+  assert.match(html, /Vollständiges Backup/);
+  assert.match(html, /Excel-Übersicht/);
+  assert.match(html, /Bestand am OeKB-Meldetag/);
   assert.match(html, /Dein nächster Schritt/);
   assert.match(html, /Geführte Berechnung/);
   assert.match(html, /Automatisch übernommene OeKB-Werte/);

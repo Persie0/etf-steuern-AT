@@ -24,6 +24,15 @@ Steuerwerte je Anteil und berechnet daraus die relevanten E1kv-Kennzahlen.
 - frei editierbare Zahlenfelder: Nullwerte lassen sich vollständig löschen und ohne führende Null neu eingeben
 - lokaler Copy-Paste-Parser und Gemini-BYOK als eingeklappter Notfallweg
 - Einzel- oder Portfolio-CSV-Nachweis für die eigene Dokumentation
+- vollständiges JSON-Backup und Restore aller lokalen ETF-, Melde-, Rechner- und Transaktionsdaten; BYOK-Schlüssel werden nicht exportiert
+- strukturierter Excel-Export mit E1kv-Jahressummen, sämtlichen ETF-Jahresdaten und separater Transaktionsliste
+- lokaler PDF-Import von Kauf-/Verkaufsabrechnungen: erkennt Transaktionsart, ISIN, Datum und Stückzahl und berechnet den historischen Bestand am jeweiligen OeKB-Meldetag
+
+Der PDF-Import ist nach dem extractor-basierten, testbaren Ansatz von Portfolio
+Performance aufgebaut, verwendet aber einen eigenen generischen Parser. Da Banken
+PDF-Layouts ändern, müssen erkannte Transaktionen und die angezeigte Vertrauensstufe
+vor der Steuerberechnung geprüft werden. Bildscans ohne Textschicht benötigen weiterhin
+eine vorherige OCR-Erkennung.
 
 Die Anwendung ist eine Rechenhilfe und keine Steuerberatung. OeKB-Meldung,
 Depotauszug, Anschaffungslos-Zuordnung, Umrechnungskurs und aktuelles E1kv-Formular müssen vor Abgabe

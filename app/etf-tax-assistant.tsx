@@ -7,6 +7,11 @@ import { parseEditableNumber } from "../lib/editable-number";
 import { selectLatestHeldPositions } from "../lib/portfolio";
 import { OekbExtraction, parseOekbTextLocally } from "../lib/oekb-extractor";
 import type { OekbReportHistoryItem, OekbReportPrediction } from "../lib/oekb-csv";
+import { currentUnitsByIsin, parseBrokerPdfText, unitsAtDate } from "../lib/broker-transactions";
+import type { BrokerTransaction } from "../lib/broker-transactions";
+import { extractPdfText } from "../lib/pdf-text";
+import { createAppBackup, parseAppBackup } from "../lib/app-backup";
+import { buildPortfolioWorkbook } from "../lib/xlsx-export";
 
 type NumberField = "units" | "eurRate" | "distributionsPerUnit" | "deemedIncomePerUnit" | "creditableTaxPerUnit" | "costAdjustmentPerUnit" | "baseAcquisitionCost" | "saleProceeds" | "saleCostBasis" | "saleFees" | "saleFxRate" | "openingPricePerUnit" | "closingPricePerUnit";
 type Values = Record<NumberField, number>;
@@ -192,6 +197,10 @@ export default function EtfTaxAssistant() {
   const [retryingPositionId, setRetryingPositionId] = useState<string | null>(null);
   const [ownershipStatus, setOwnershipStatus] = useState<OwnershipStatus>("held");
   const [portfolio, setPortfolio] = useState<PortfolioEntry[]>([]);
+  const [transactions, setTransactions] = useState<BrokerTransaction[]>([]);
+  const [pdfImportState, setPdfImportState] = useState<"idle" | "reading" | "done" | "error">("idle");
+  const [pdfImportMessage, setPdfImportMessage] = useState("");
+  const [dataMessage, setDataMessage] = useState("");
   const [activePositionId, setActivePositionId] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
 
@@ -200,13 +209,14 @@ export default function EtfTaxAssistant() {
       const saved = localStorage.getItem("etf-steuerassistent-at");
       if (saved) {
         try {
-          const parsed = JSON.parse(saved) as { identifier?: string; taxYear?: string; status?: FundStatus; values?: Values; ownershipStatus?: OwnershipStatus; portfolio?: PortfolioEntry[]; activePositionId?: string | null; showSale?: boolean; saleCurrency?: SaleCurrency; saleDate?: string };
+          const parsed = JSON.parse(saved) as { identifier?: string; taxYear?: string; status?: FundStatus; values?: Values; ownershipStatus?: OwnershipStatus; portfolio?: PortfolioEntry[]; transactions?: BrokerTransaction[]; activePositionId?: string | null; showSale?: boolean; saleCurrency?: SaleCurrency; saleDate?: string };
           if (parsed.identifier) setIdentifier(parsed.identifier);
           if (parsed.taxYear) setTaxYear(parsed.taxYear);
           if (parsed.status) setStatus(parsed.status);
           if (parsed.values) setValues({ ...initialValues, ...parsed.values });
           if (parsed.ownershipStatus) setOwnershipStatus(parsed.ownershipStatus);
           if (Array.isArray(parsed.portfolio)) setPortfolio(parsed.portfolio.map((entry) => ({ ...entry, values: { ...initialValues, ...entry.values }, saleCurrency: entry.saleCurrency ?? "EUR", saleDate: entry.saleDate ?? "" })));
+          if (Array.isArray(parsed.transactions)) setTransactions(parsed.transactions);
           if (parsed.activePositionId) setActivePositionId(parsed.activePositionId);
           if (parsed.showSale) setShowSale(true);
           if (parsed.saleCurrency) setSaleCurrency(parsed.saleCurrency);
@@ -222,8 +232,8 @@ export default function EtfTaxAssistant() {
 
   useEffect(() => {
     if (!hydrated) return;
-    localStorage.setItem("etf-steuerassistent-at", JSON.stringify({ identifier, taxYear, status, values, ownershipStatus, portfolio, activePositionId, showSale, saleCurrency, saleDate }));
-  }, [identifier, taxYear, status, values, ownershipStatus, portfolio, activePositionId, showSale, saleCurrency, saleDate, hydrated]);
+    localStorage.setItem("etf-steuerassistent-at", JSON.stringify({ identifier, taxYear, status, values, ownershipStatus, portfolio, transactions, activePositionId, showSale, saleCurrency, saleDate }));
+  }, [identifier, taxYear, status, values, ownershipStatus, portfolio, transactions, activePositionId, showSale, saleCurrency, saleDate, hydrated]);
   useEffect(() => {
     if (saveGeminiKey && geminiKey) localStorage.setItem("etf-steuer-gemini-key", geminiKey);
     else if (!saveGeminiKey) localStorage.removeItem("etf-steuer-gemini-key");
@@ -271,11 +281,14 @@ export default function EtfTaxAssistant() {
   const perUnitCurrency = oekbResult?.currency ?? importResult?.currency ?? "FW";
   const activeImport = oekbState === "done" ? oekbResult : importState === "done" ? importResult : null;
   const formattedReportDate = formatReportDate(activeImport?.reportDate);
+  const normalizedIdentifier = identifier.trim().toUpperCase();
+  const transactionBalances = useMemo(() => currentUnitsByIsin(transactions), [transactions]);
+  const brokerUnitsAtReport = activeImport?.reportDate && normalizedIdentifier.length === 12
+    ? unitsAtDate(transactions, normalizedIdentifier, activeImport.reportDate) : null;
   const importedValue = (value: number | null | undefined) => activeImport !== null && value !== null && value !== undefined;
   const unitsComplete = values.units > 0;
   const previewReady = unitsComplete && (status === "non-reporting" || activeImport !== null);
   const reportStillMissing = oekbState === "missing" && importState !== "done";
-  const normalizedIdentifier = identifier.trim().toUpperCase();
   const correctionHistory = (() => {
     const corrections: Array<CostBasisCorrection & { id: string; source: "saved" | "current" }> = portfolio
       .filter((entry) => entry.identifier === normalizedIdentifier && entry.status === "reporting" && entry.reportTracking?.state !== "pending")
@@ -296,6 +309,71 @@ export default function EtfTaxAssistant() {
   const convertedSaleProceeds = values.saleProceeds * saleRate;
   const convertedSaleFees = values.saleFees * saleRate;
   const setField = (field: NumberField, value: number) => setValues((current) => ({ ...current, [field]: value }));
+
+  function downloadFile(content: BlobPart, filename: string, type: string) {
+    const url = URL.createObjectURL(new Blob([content], { type }));
+    const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  function exportBackup() {
+    const raw = createAppBackup({ identifier, taxYear, status, values, ownershipStatus, portfolio, activePositionId, showSale, saleCurrency, saleDate, transactions });
+    downloadFile(raw, `ETF-Steuer-Backup-${new Date().toISOString().slice(0, 10)}.json`, "application/json;charset=utf-8");
+    setDataMessage("✓ Vollständiges JSON-Backup erstellt.");
+  }
+
+  async function importBackup(file: File | undefined) {
+    if (!file) return;
+    try {
+      const backup = parseAppBackup<PortfolioEntry, Values>(await file.text());
+      if (!window.confirm(`Backup mit ${backup.data.portfolio.length} ETF-Einträgen und ${backup.data.transactions.length} Transaktionen laden? Die aktuellen lokalen Daten werden ersetzt.`)) return;
+      const data = backup.data;
+      setIdentifier(data.identifier); setTaxYear(data.taxYear); setStatus(data.status); setValues({ ...initialValues, ...data.values });
+      setOwnershipStatus(data.ownershipStatus); setPortfolio(data.portfolio.map((entry) => ({ ...entry, values: { ...initialValues, ...entry.values } })));
+      setTransactions(data.transactions); setActivePositionId(data.activePositionId); setShowSale(data.showSale); setSaleCurrency(data.saleCurrency); setSaleDate(data.saleDate);
+      setDataMessage(`✓ Backup vom ${formatShortDate(backup.exportedAt.slice(0, 10)) ?? backup.exportedAt} wiederhergestellt.`);
+    } catch (error) { setDataMessage(`Import nicht möglich: ${error instanceof Error ? error.message : "Unbekannter Fehler"}`); }
+  }
+
+  function exportExcel() {
+    const workbook = buildPortfolioWorkbook(portfolio, transactions);
+    downloadFile(workbook, `ETF-Steuer-Uebersicht-${new Date().toISOString().slice(0, 10)}.xlsx`, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    setDataMessage("✓ Excel-Übersicht mit Steuerjahren, ETF-Daten und Transaktionen erstellt.");
+  }
+
+  async function importBrokerPdfs(files: FileList | null) {
+    if (!files?.length) return;
+    setPdfImportState("reading"); setPdfImportMessage(`${files.length} PDF-Datei${files.length === 1 ? "" : "en"} wird lokal gelesen …`);
+    try {
+      const imported: BrokerTransaction[] = [];
+      const warnings: string[] = [];
+      for (const file of Array.from(files)) {
+        if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) { warnings.push(`${file.name}: keine PDF-Datei`); continue; }
+        const bytes = await file.arrayBuffer();
+        const digest = await crypto.subtle.digest("SHA-256", bytes);
+        const sourceId = Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+        const extractedPdf = await extractPdfText(file);
+        const parsed = parseBrokerPdfText(extractedPdf.text, file.name);
+        parsed.transactions.forEach((transaction, index) => imported.push({ ...transaction, id: `${sourceId}-${index}`, sourceId, importedAt: new Date().toISOString() }));
+        warnings.push(...parsed.warnings.map((warning) => `${file.name}: ${warning}`));
+      }
+      setTransactions((current) => {
+        const known = new Set(current.map((item) => item.id));
+        const fresh = imported.filter((item) => !known.has(item.id));
+        return [...current, ...fresh].sort((a, b) => a.date.localeCompare(b.date));
+      });
+      const uniqueIsins = [...new Set(imported.map((item) => item.isin))];
+      if (!identifier.trim() && uniqueIsins.length === 1) setIdentifier(uniqueIsins[0]);
+      if (activeImport?.reportDate && normalizedIdentifier.length === 12 && values.units === 0) {
+        const inferred = unitsAtDate([...transactions, ...imported], normalizedIdentifier, activeImport.reportDate);
+        if (inferred.units > 0) setField("units", inferred.units);
+      }
+      setPdfImportState("done");
+      setPdfImportMessage(`${imported.length} Transaktion${imported.length === 1 ? "" : "en"} erkannt${warnings.length ? ` · ${warnings.length} Prüfhinweis${warnings.length === 1 ? "" : "e"}` : ""}. Doppelte Dateien werden beim erneuten Import übersprungen.`);
+    } catch (error) {
+      setPdfImportState("error"); setPdfImportMessage(error instanceof Error ? error.message : "PDF-Import fehlgeschlagen.");
+    }
+  }
 
   function closeTutorial() {
     localStorage.setItem("etf-steuer-tutorial-seen-v2", "1");
@@ -499,8 +577,10 @@ export default function EtfTaxAssistant() {
   }
 
   function applyExtraction(extracted: OekbExtraction) {
-    setValues((current) => valuesWithExtraction(current, extracted));
-    if (extracted.isin) setIdentifier(extracted.isin.toUpperCase());
+    const extractedIsin = (extracted.isin ?? identifier).trim().toUpperCase();
+    const inferred = extracted.reportDate && extractedIsin.length === 12 ? unitsAtDate(transactions, extractedIsin, extracted.reportDate) : null;
+    setValues((current) => ({ ...valuesWithExtraction(current, extracted), units: current.units === 0 && inferred && inferred.units > 0 ? inferred.units : current.units }));
+    if (extracted.isin) setIdentifier(extractedIsin);
     if (extracted.reportDate) setTaxYear(extracted.reportDate.slice(0, 4));
     setStatus("reporting");
     setShowResults(false);
@@ -594,6 +674,17 @@ export default function EtfTaxAssistant() {
         <article><span className="stat-icon filing">✓</span><div><small>Status FinanzOnline <Info>Bereit bedeutet: Alle derzeit gespeicherten Positionen für dieses Jahr haben eine verfügbare Meldung. Vor Abgabe trotzdem Belege prüfen.</Info></small><strong className="status-word">{currentYearPortfolio.length === 0 ? "Starten" : currentYearPending.length ? "Offen" : "Bereit"}</strong><em>{currentYearPortfolio.length === 0 ? "ersten ETF hinzufügen" : currentYearPending.length ? `${currentYearPending.length} Meldung${currentYearPending.length === 1 ? "" : "en"} fehlt` : "Jahressummen verfügbar"}</em></div></article>
       </div>
 
+      <section className="data-center" aria-labelledby="data-center-title">
+        <div className="data-center-heading"><div><span className="mini-kicker">Sichern · übertragen · automatisch erfassen</span><h2 id="data-center-title">Deine Datenzentrale</h2><p>PDFs bleiben auf diesem Gerät. Backup und Excel enthalten deine Steuerdaten und sollten sicher aufbewahrt werden.</p></div><span className="local-processing">🔒 lokale Verarbeitung</span></div>
+        <div className="data-tools">
+          <article className="data-tool pdf-tool"><span className="tool-icon">PDF</span><div><h3>Broker-Abrechnungen importieren</h3><p>Kauf- und Verkaufs-PDFs einlesen. Das Tool erkennt ISIN, Datum und Stückzahl und berechnet daraus den Bestand am OeKB-Meldetag.</p><label className="file-action primary-file">PDFs auswählen<input type="file" accept="application/pdf,.pdf" multiple onChange={(event) => { void importBrokerPdfs(event.target.files); event.target.value = ""; }} /></label></div><em>Trade Republic, Scalable, Flatex, DEGIRO, IBKR und ähnliche Text-PDFs</em></article>
+          <article className="data-tool"><span className="tool-icon">JSON</span><div><h3>Vollständiges Backup</h3><p>Alle ETF-Jahre, Meldungen, Rechnerwerte und importierten Transaktionen exportieren oder auf einem anderen Gerät wiederherstellen.</p><div className="tool-actions"><button type="button" onClick={exportBackup}>Backup exportieren</button><label className="file-action">Backup importieren<input type="file" accept="application/json,.json" onChange={(event) => { void importBackup(event.target.files?.[0]); event.target.value = ""; }} /></label></div></div><em>Der Gemini-Key wird aus Sicherheitsgründen nie exportiert.</em></article>
+          <article className="data-tool"><span className="tool-icon">XLSX</span><div><h3>Excel-Übersicht</h3><p>Übersichtliche Arbeitsmappe mit E1kv-Jahressummen, sämtlichen ETF-Steuerdaten und einer separaten Transaktionsliste.</p><button type="button" onClick={exportExcel}>Excel herunterladen</button></div><em>Blätter: Übersicht · ETF-Jahresdaten · Transaktionen</em></article>
+        </div>
+        {(pdfImportMessage || dataMessage) && <div className={`data-feedback ${pdfImportState === "error" || dataMessage.startsWith("Import nicht") ? "error" : ""}`} role="status">{pdfImportState === "reading" && <span className="spinner" />}{pdfImportMessage || dataMessage}</div>}
+        {transactionBalances.length > 0 && <details className="transaction-summary"><summary><span><b>{transactions.length} importierte Transaktionen</b><small>Aktuell errechneter Bestand aus allen Käufen minus Verkäufen</small></span><em>{transactionBalances.length} ISIN</em></summary><div className="balance-list">{transactionBalances.map((balance) => <article key={balance.isin}><span><b>{balance.isin}</b><small>{balance.transactions} Kauf-/Verkaufsbelege</small></span><strong className={balance.units < 0 ? "negative" : ""}>{balance.units.toLocaleString("de-AT", { maximumFractionDigits: 8 })} Stk.</strong><button type="button" onClick={() => { setIdentifier(balance.isin); document.querySelector("#rechner")?.scrollIntoView({ behavior: "smooth" }); }}>Verwenden →</button></article>)}</div><div className="transaction-ledger"><div className="ledger-label">Erkannte Belege bitte kontrollieren</div>{transactions.map((item) => <article key={item.id}><span className={`trade-type ${item.type}`}>{item.type === "buy" ? "Kauf" : "Verkauf"}</span><span><b>{formatShortDate(item.date)} · {item.isin}</b><small>{item.broker ?? "Broker offen"} · {item.sourceFile}</small></span><strong>{item.units.toLocaleString("de-AT", { maximumFractionDigits: 8 })} Stk.</strong><em className={`confidence ${item.confidence}`}>{item.confidence === "high" ? "hoch" : item.confidence === "medium" ? "mittel" : "prüfen"}</em><button type="button" aria-label={`${item.sourceFile} entfernen`} onClick={() => setTransactions((current) => current.filter((transaction) => transaction.id !== item.id))}>×</button></article>)}</div><button className="clear-transactions" type="button" onClick={() => { if (window.confirm("Alle importierten Transaktionen entfernen? Gespeicherte ETF-Jahreswerte bleiben erhalten.")) setTransactions([]); }}>Alle Transaktionen entfernen</button></details>}
+      </section>
+
       <div className="dashboard-layout">
         <section className="holdings-panel" aria-label="Aktuelle ETF-Holdings">
           <div className="panel-heading"><div><span className="mini-kicker">Automatisch aus deinem lokalen Portfolio</span><h2>Aktuelle Holdings</h2><p>Je ETF wird der neueste gespeicherte Stand gezeigt. Frühere Steuerjahre bleiben darunter im Verlauf erhalten.</p></div><button type="button" onClick={startNewPosition}>+ Neu</button></div>
@@ -654,6 +745,7 @@ export default function EtfTaxAssistant() {
           <section className={`holding-entry ${unitsComplete ? "complete" : ""}`} aria-label="Erforderliche Stückzahl">
             <div className="holding-entry-head"><div><span className="action-kicker">Deine einzige Pflichtangabe</span><h3>{status === "reporting" ? "Wie viele Anteile hattest du am Meldetag?" : "Wie viele Anteile sind zu berücksichtigen?"}</h3></div><span className="manual-badge">{unitsComplete ? "✓ EINGETRAGEN" : "JETZT EINGEBEN"}</span></div>
             {status === "reporting" && <div className={`holding-date ${formattedReportDate ? "known" : ""}`}><span>OeKB-Meldetag / steuerlicher Stichtag</span><strong>{formattedReportDate ?? "Wird nach dem OeKB-Import angezeigt"}</strong>{activeImport?.reportDate && <small>{activeImport.reportDate} · Bestand im Depotauszug an diesem Tag prüfen</small>}</div>}
+            {brokerUnitsAtReport && brokerUnitsAtReport.matchedTransactions > 0 && <div className={`broker-units ${brokerUnitsAtReport.units > 0 ? "found" : "warning"}`}><div><span>Aus PDF-Transaktionen zum Stichtag</span><strong>{brokerUnitsAtReport.units.toLocaleString("de-AT", { maximumFractionDigits: 8 })} Stück</strong><small>{brokerUnitsAtReport.matchedTransactions} Kauf-/Verkaufstransaktion{brokerUnitsAtReport.matchedTransactions === 1 ? "" : "en"} bis {activeImport?.reportDate}</small></div>{brokerUnitsAtReport.units > 0 && (values.units !== brokerUnitsAtReport.units ? <button type="button" onClick={() => setField("units", brokerUnitsAtReport.units)}>Stückzahl übernehmen</button> : <span className="imported-pill">✓ automatisch übernommen</span>)}</div>}
             <Field className="units-field" label="Deine Stückzahl an genau diesem Tag" value={values.units} onChange={(v) => setField("units", v)} suffix="Stk." step="0.000001" hint="Nicht die heutige Stückzahl, sondern dein Bestand am veröffentlichten Meldetag." />
             <p className="holding-help">{status === "reporting" ? "Nicht den heutigen Bestand eintragen: Maßgeblich ist deine Stückzahl am oben genannten Meldetag." : "Trage die für das gewählte Steuerjahr maßgebliche Stückzahl ein."}</p>
           </section>

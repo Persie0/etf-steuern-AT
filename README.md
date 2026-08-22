@@ -13,12 +13,14 @@ Steuerwerte je Anteil und berechnet daraus die relevanten E1kv-Kennzahlen.
 - automatische EUR-Umrechnung über den letzten verfügbaren ECB-Referenzkurs am Meldetag
 - Stückzahl-basierte Steuer- und E1kv-Berechnung für Melde- und Nicht-Meldefonds
 - lokales Portfolio für mehrere gehaltene oder bereits verkaufte ETFs mit E1kv-Gesamtsummen je Steuerjahr
+- ein Dashboard mit den neuesten aktuellen Holdings je ISIN, offenen Jahresmeldungen, Steuerschätzung und nächstem empfohlenen Schritt
 - Schätzung des nächsten OeKB-Meldetags samt Zeitfenster und Vertrauensstufe aus historischen Jahresmeldungen
 - Meldungs-Tracker fürs aktuelle Steuerjahr: fehlende OeKB-Jahresmeldungen lokal vormerken und später erneut prüfen
 - Verkaufserlöse und Spesen wahlweise in EUR oder USD, mit automatischem ECB-EUR/USD-Kurs zum Verkaufsdatum; private Verkaufsspesen werden dokumentiert, aber nicht vom steuerpflichtigen Gewinn abgezogen
 - jahresübergreifender Anschaffungskosten-Verlauf je ISIN mit kumulierten OeKB-Korrekturen und Verkaufsdatum-Cutoff
 - verständliche Folgejahres-Anleitung inklusive Teilverkaufs- und Restkosten-Hinweisen
 - Erststart-Tutorial mit dem realen Vanguard FTSE All-World UCITS ETF, echten historischen OeKB-Meldungen, vollständigen Jahres- und Verkaufsrechnungen, Begriffserklärungen und einer direkten E1kv-/FinanzOnline-Zuordnung
+- geführter Drei-Schritt-Rechner mit Live-Vorschau, einklappbaren automatisch importierten Fachwerten und kontextbezogenen Begriffserklärungen
 - frei editierbare Zahlenfelder: Nullwerte lassen sich vollständig löschen und ohne führende Null neu eingeben
 - lokaler Copy-Paste-Parser und Gemini-BYOK als eingeklappter Notfallweg
 - Einzel- oder Portfolio-CSV-Nachweis für die eigene Dokumentation

@@ -11,8 +11,22 @@ export type TaxInput = {
   saleProceeds: number;
   saleCostBasis: number;
   saleFees: number;
+  saleFxRate?: number;
   openingPricePerUnit: number;
   closingPricePerUnit: number;
+};
+
+export type CostBasisCorrection = {
+  taxYear: string;
+  reportDate: string | null;
+  amount: number;
+};
+
+export type CorrectedCostBasis = {
+  eligibleCorrections: CostBasisCorrection[];
+  excludedCorrections: CostBasisCorrection[];
+  totalCorrection: number;
+  correctedCostBasis: number;
 };
 
 export type TaxResult = {
@@ -35,7 +49,8 @@ export function calculateEtfTax(input: TaxInput): TaxResult {
   const rate = positive(input.eurRate) || 1;
   const distributions = positive(input.distributionsPerUnit) * units * rate;
   const creditedTax = input.status === "reporting" ? positive(input.creditableTaxPerUnit) * units * rate : 0;
-  const saleResult = input.saleProceeds - input.saleCostBasis - input.saleFees;
+  const saleFxRate = positive(input.saleFxRate ?? 1) || 1;
+  const saleResult = input.saleProceeds * saleFxRate - input.saleCostBasis - input.saleFees * saleFxRate;
 
   let deemedIncome = positive(input.deemedIncomePerUnit) * units * rate;
   let nonReportingLumpSum = 0;
@@ -62,5 +77,17 @@ export function calculateEtfTax(input: TaxInput): TaxResult {
     estimatedTax: rounded(positive(taxableTotal * 0.275 - credit)),
     costAdjustment: input.status === "reporting" ? rounded(input.costAdjustmentPerUnit * units * rate) : 0,
     nonReportingLumpSum: rounded(nonReportingLumpSum),
+  };
+}
+
+export function calculateCorrectedCostBasis(baseCost: number, corrections: CostBasisCorrection[], cutoffDate?: string): CorrectedCostBasis {
+  const eligibleCorrections = corrections.filter((correction) => !cutoffDate || (!!correction.reportDate && correction.reportDate <= cutoffDate));
+  const excludedCorrections = corrections.filter((correction) => !eligibleCorrections.includes(correction));
+  const totalCorrection = rounded(eligibleCorrections.reduce((sum, correction) => sum + (Number.isFinite(correction.amount) ? correction.amount : 0), 0));
+  return {
+    eligibleCorrections,
+    excludedCorrections,
+    totalCorrection,
+    correctedCostBasis: rounded(positive(baseCost) + totalCorrection),
   };
 }

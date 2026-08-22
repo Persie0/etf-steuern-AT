@@ -1,4 +1,4 @@
-import { availableReportYears, parseOekbDetail, parseOekbReportList, selectAnnualReport } from "../../../lib/oekb-csv";
+import { annualReportHistory, availableReportYears, parseOekbDetail, parseOekbReportList, predictNextAnnualReport, selectAnnualReport } from "../../../lib/oekb-csv";
 
 export const runtime = "edge";
 
@@ -40,12 +40,14 @@ export async function GET(request: Request) {
     });
     const reports = parseOekbReportList(listCsv);
     const availableYears = availableReportYears(reports, isin);
+    const reportHistory = annualReportHistory(reports, isin);
+    const prediction = predictNextAnnualReport(reports, isin);
     const report = selectAnnualReport(reports, isin, taxYear || undefined);
     if (!report) {
       const message = availableYears.length
         ? `Für ${taxYear || "diese ISIN"} wurde keine gültige OeKB-Jahresmeldung gefunden. Verfügbar: ${availableYears.join(", ")}.`
         : "Für diese ISIN wurde keine gültige OeKB-Jahresmeldung gefunden.";
-      return Response.json({ error: message, availableYears }, { status: 404 });
+      return Response.json({ error: message, availableYears, reportHistory, prediction }, { status: 404 });
     }
 
     stage = "Jahresmeldung";
@@ -64,7 +66,7 @@ export async function GET(request: Request) {
     }
     if (!extraction) throw new Error("OeKB-Detailformat nicht erkannt");
 
-    return Response.json({ ...extraction, availableYears }, {
+    return Response.json({ ...extraction, availableYears, reportHistory, prediction }, {
       headers: { "cache-control": "public, max-age=300, s-maxage=86400, stale-while-revalidate=604800" },
     });
   } catch {

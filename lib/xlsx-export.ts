@@ -25,7 +25,7 @@ function cell(value: unknown, row: number, column: number, style = 0): string {
 function sheet(rows: unknown[][], widths: number[], moneyColumns: number[] = [], numberColumns: number[] = []): string {
   const content = rows.map((values, rowIndex) => `<row r="${rowIndex + 1}"${rowIndex === 0 ? ' ht="24" customHeight="1"' : ""}>${values.map((value, columnIndex) => cell(value, rowIndex + 1, columnIndex, rowIndex === 0 ? 1 : moneyColumns.includes(columnIndex) ? 2 : numberColumns.includes(columnIndex) ? 3 : 0)).join("")}</row>`).join("");
   const cols = widths.map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`).join("");
-  const last = `${columnName(Math.max(0, rows[0]?.length - 1 ?? 0))}${Math.max(1, rows.length)}`;
+  const last = `${columnName(Math.max(0, (rows[0]?.length ?? 1) - 1))}${Math.max(1, rows.length)}`;
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView showGridLines="0" workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${cols}</cols><sheetData>${content}</sheetData><autoFilter ref="A1:${last}"/></worksheet>`;
 }
 

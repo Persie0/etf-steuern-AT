@@ -337,7 +337,9 @@ export default function EtfTaxAssistant() {
 
   function exportExcel() {
     const workbook = buildPortfolioWorkbook(portfolio, transactions);
-    downloadFile(workbook, `ETF-Steuer-Uebersicht-${new Date().toISOString().slice(0, 10)}.xlsx`, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    const bytes = new ArrayBuffer(workbook.byteLength);
+    new Uint8Array(bytes).set(workbook);
+    downloadFile(bytes, `ETF-Steuer-Uebersicht-${new Date().toISOString().slice(0, 10)}.xlsx`, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     setDataMessage("✓ Excel-Übersicht mit Steuerjahren, ETF-Daten und Transaktionen erstellt.");
   }
 

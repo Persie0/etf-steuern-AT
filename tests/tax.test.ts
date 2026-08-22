@@ -42,17 +42,24 @@ test("uses the higher non-reporting-fund lump sum", () => {
 
 test("separates sale gains and losses", () => {
   const gain = calculateEtfTax({ ...base, saleProceeds: 1000, saleCostBasis: 800, saleFees: 10 });
-  assert.equal(gain.kz994, 190);
+  assert.equal(gain.kz994, 200);
   assert.equal(gain.kz892, 0);
   const loss = calculateEtfTax({ ...base, saleProceeds: 700, saleCostBasis: 800, saleFees: 10 });
   assert.equal(loss.kz994, 0);
-  assert.equal(loss.kz892, 110);
+  assert.equal(loss.kz892, 100);
 });
 
-test("converts USD sale proceeds and fees with the sale-date EUR rate", () => {
+test("converts USD sale proceeds with the sale-date EUR rate", () => {
   const result = calculateEtfTax({ ...base, distributionsPerUnit: 0, deemedIncomePerUnit: 0, creditableTaxPerUnit: 0, saleProceeds: 1000, saleCostBasis: 700, saleFees: 10, saleFxRate: 0.9 });
-  assert.equal(result.kz994, 191);
+  assert.equal(result.kz994, 200);
   assert.equal(result.kz892, 0);
+});
+
+test("does not deduct private sale transaction costs from the taxable gain", () => {
+  const withoutFees = calculateEtfTax({ ...base, distributionsPerUnit: 0, deemedIncomePerUnit: 0, saleProceeds: 1000, saleCostBasis: 800, saleFees: 0 });
+  const withFees = calculateEtfTax({ ...base, distributionsPerUnit: 0, deemedIncomePerUnit: 0, saleProceeds: 1000, saleCostBasis: 800, saleFees: 50 });
+  assert.equal(withFees.kz994, withoutFees.kz994);
+  assert.equal(withFees.estimatedTax, withoutFees.estimatedTax);
 });
 
 test("carries OeKB acquisition-cost corrections forward only through the sale date", () => {

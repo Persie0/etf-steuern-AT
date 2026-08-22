@@ -50,7 +50,9 @@ export function calculateEtfTax(input: TaxInput): TaxResult {
   const distributions = positive(input.distributionsPerUnit) * units * rate;
   const creditedTax = input.status === "reporting" ? positive(input.creditableTaxPerUnit) * units * rate : 0;
   const saleFxRate = positive(input.saleFxRate ?? 1) || 1;
-  const saleResult = input.saleProceeds * saleFxRate - input.saleCostBasis - input.saleFees * saleFxRate;
+  // Austrian income-tax rules generally do not allow private transaction
+  // costs to reduce this taxable disposal result.
+  const saleResult = input.saleProceeds * saleFxRate - input.saleCostBasis;
 
   let deemedIncome = positive(input.deemedIncomePerUnit) * units * rate;
   let nonReportingLumpSum = 0;

@@ -18,6 +18,8 @@ Steuerwerte je Anteil und berechnet daraus die relevanten E1kv-Kennzahlen.
 - Verkaufserlöse und Spesen wahlweise in EUR oder USD, mit automatischem ECB-EUR/USD-Kurs zum Verkaufsdatum
 - jahresübergreifender Anschaffungskosten-Verlauf je ISIN mit kumulierten OeKB-Korrekturen und Verkaufsdatum-Cutoff
 - verständliche Folgejahres-Anleitung inklusive Teilverkaufs- und Restkosten-Hinweisen
+- Erststart-Tutorial mit Schritt-für-Schritt-Erklärung und einem vollständigen Praxisfall über drei Haltejahre bis zum USD-Verkauf
+- frei editierbare Zahlenfelder: Nullwerte lassen sich vollständig löschen und ohne führende Null neu eingeben
 - lokaler Copy-Paste-Parser und Gemini-BYOK als eingeklappter Notfallweg
 - Einzel- oder Portfolio-CSV-Nachweis für die eigene Dokumentation
 

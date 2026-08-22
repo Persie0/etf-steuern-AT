@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { calculateCorrectedCostBasis, calculateEtfTax } from "../lib/tax.ts";
+import { parseEditableNumber } from "../lib/editable-number.ts";
 
 const base = {
   status: "reporting" as const,
@@ -64,4 +65,10 @@ test("carries OeKB acquisition-cost corrections forward only through the sale da
   assert.equal(ledger.correctedCostBasis, 1030);
   assert.equal(ledger.eligibleCorrections.length, 2);
   assert.equal(ledger.excludedCorrections.length, 1);
+});
+
+test("allows an empty number field before entering a value without a leading zero", () => {
+  assert.equal(parseEditableNumber(""), 0);
+  assert.equal(parseEditableNumber("12.5"), 12.5);
+  assert.equal(parseEditableNumber("12,5"), 12.5);
 });

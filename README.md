@@ -12,11 +12,17 @@ Steuerwerte je Anteil und berechnet daraus die relevanten E1kv-Kennzahlen.
 - ausschüttungsgleiche Erträge, anrechenbare Quellensteuer und AK-Korrektur
 - automatische EUR-Umrechnung über den letzten verfügbaren ECB-Referenzkurs am Meldetag
 - Stückzahl-basierte Steuer- und E1kv-Berechnung für Melde- und Nicht-Meldefonds
+- lokales Portfolio für mehrere gehaltene oder bereits verkaufte ETFs mit E1kv-Gesamtsummen je Steuerjahr
+- Schätzung des nächsten OeKB-Meldetags samt Zeitfenster und Vertrauensstufe aus historischen Jahresmeldungen
+- Meldungs-Tracker fürs aktuelle Steuerjahr: fehlende OeKB-Jahresmeldungen lokal vormerken und später erneut prüfen
+- Verkaufserlöse und Spesen wahlweise in EUR oder USD, mit automatischem ECB-EUR/USD-Kurs zum Verkaufsdatum
+- jahresübergreifender Anschaffungskosten-Verlauf je ISIN mit kumulierten OeKB-Korrekturen und Verkaufsdatum-Cutoff
+- verständliche Folgejahres-Anleitung inklusive Teilverkaufs- und Restkosten-Hinweisen
 - lokaler Copy-Paste-Parser und Gemini-BYOK als eingeklappter Notfallweg
-- CSV-Nachweis für die eigene Dokumentation
+- Einzel- oder Portfolio-CSV-Nachweis für die eigene Dokumentation
 
 Die Anwendung ist eine Rechenhilfe und keine Steuerberatung. OeKB-Meldung,
-Depotauszug, Umrechnungskurs und aktuelles E1kv-Formular müssen vor Abgabe
+Depotauszug, Anschaffungslos-Zuordnung, Umrechnungskurs und aktuelles E1kv-Formular müssen vor Abgabe
 geprüft werden.
 
 ## Prerequisites

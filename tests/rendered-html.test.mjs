@@ -35,4 +35,12 @@ test("renders development preview metadata", async () => {
   assert.match(html, /Deine einzige Pflichtangabe/);
   assert.match(html, /OeKB-Meldetag \/ steuerlicher Stichtag/);
   assert.match(html, /Bitte zuerst Stückzahl eingeben/);
+  assert.match(html, /Meine ETF-Positionen/);
+  assert.match(html, /Weiteren ETF hinzufügen/);
+  assert.match(html, /Bereits verkauft/);
+  assert.match(html, /Meldungs-Tracker/);
+  assert.match(html, /automatisch im Tracker gespeichert/);
+  assert.match(html, /Anschaffungskosten-Verlauf/);
+  assert.match(html, /Verkaufs-Anschaffungskosten übernehmen/);
+  assert.match(html, /So gehst du in den Folgejahren vor/);
 });

@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { availableReportYears, parseOekbDetail, parseOekbReportList, parseSemicolonCsv, selectAnnualReport } from "../lib/oekb-csv.ts";
+import { annualReportHistory, availableReportYears, parseOekbDetail, parseOekbReportList, parseSemicolonCsv, predictNextAnnualReport, selectAnnualReport } from "../lib/oekb-csv.ts";
 
 const listFixture = `ISIN;Bezeichnung;Melde-ID;Meldedatum;Gültig bis;Jahresdatenmeldung;Ausschüttungsmeldung;Selbstnachweis
 IE00B4L5Y983;iShares Core MSCI World UCITS ETF USD(Acc);637679;18.12.2025;;JA;NEIN;NEIN
 IE00B4L5Y983;iShares Core MSCI World UCITS ETF USD(Acc);563531;09.01.2025;;JA;NEIN;NEIN
 IE00B4L5Y983;iShares Core MSCI World UCITS ETF USD(Acc);483461;18.12.2023;01.02.2024;JA;NEIN;NEIN
+IE00B4L5Y983;iShares Core MSCI World UCITS ETF USD(Acc);383461;16.12.2022;01.02.2023;JA;NEIN;NEIN
+IE00B4L5Y983;iShares Core MSCI World UCITS ETF USD(Acc);283461;17.12.2021;01.02.2022;JA;NEIN;NEIN
 IE00B4L5Y983;iShares Core MSCI World UCITS ETF USD(Acc);470000;01.06.2024;;NEIN;JA;NEIN`;
 
 const detailFixture = `BASISINFORMATION Anteilsgattung - Stammdaten
@@ -40,6 +42,19 @@ test("selects the latest valid annual report in the requested tax year", () => {
   assert.deepEqual(availableReportYears(reports, "IE00B4L5Y983"), ["2025"]);
   assert.equal(selectAnnualReport(reports, "IE00B4L5Y983", "2025")?.reportId, "637679");
   assert.equal(selectAnnualReport(reports, "IE00B4L5Y983", "2024"), null);
+});
+
+test("builds annual report history and predicts the next reporting window", () => {
+  const reports = parseOekbReportList(listFixture);
+  const history = annualReportHistory(reports, "IE00B4L5Y983");
+  assert.deepEqual(history.map((report) => report.reportDate), ["2025-12-18", "2025-01-09", "2023-12-18", "2022-12-16", "2021-12-17"]);
+  const prediction = predictNextAnnualReport(reports, "IE00B4L5Y983");
+  assert.ok(prediction);
+  assert.match(prediction.expectedDate, /^2026-12-/);
+  assert.ok(["high", "medium", "low"].includes(prediction.confidence));
+  assert.equal(prediction.sampleSize, 5);
+  assert.ok(prediction.windowStart < prediction.expectedDate);
+  assert.ok(prediction.windowEnd > prediction.expectedDate);
 });
 
 test("extracts and combines OeKB private-investor tax values", () => {

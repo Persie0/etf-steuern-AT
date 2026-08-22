@@ -1,23 +1,78 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { calculateEtfTax, FundStatus } from "../lib/tax";
+import { calculateCorrectedCostBasis, calculateEtfTax, FundStatus } from "../lib/tax";
+import type { CostBasisCorrection } from "../lib/tax";
 import { OekbExtraction, parseOekbTextLocally } from "../lib/oekb-extractor";
+import type { OekbReportHistoryItem, OekbReportPrediction } from "../lib/oekb-csv";
 
-type NumberField = "units" | "eurRate" | "distributionsPerUnit" | "deemedIncomePerUnit" | "creditableTaxPerUnit" | "costAdjustmentPerUnit" | "saleProceeds" | "saleCostBasis" | "saleFees" | "openingPricePerUnit" | "closingPricePerUnit";
+type NumberField = "units" | "eurRate" | "distributionsPerUnit" | "deemedIncomePerUnit" | "creditableTaxPerUnit" | "costAdjustmentPerUnit" | "baseAcquisitionCost" | "saleProceeds" | "saleCostBasis" | "saleFees" | "saleFxRate" | "openingPricePerUnit" | "closingPricePerUnit";
 type Values = Record<NumberField, number>;
 type Security = { identifier: string; identifierType: "ISIN" | "WKN"; name: string | null; ticker: string | null; exchange: string | null; verified: boolean };
-type AutomaticOekbResult = OekbExtraction & { reportId: string; source: string; sourceUrl: string; availableYears: string[] };
+type AutomaticOekbResult = OekbExtraction & { reportId: string; source: string; sourceUrl: string; availableYears: string[]; reportHistory: OekbReportHistoryItem[]; prediction: OekbReportPrediction | null };
+type PendingOekbInfo = { error: string; availableYears: string[]; reportHistory: OekbReportHistoryItem[]; prediction: OekbReportPrediction | null };
+type ReportTracking = { state: "available" | "pending"; lastCheckedAt: string; message: string | null; reportHistory: OekbReportHistoryItem[]; prediction: OekbReportPrediction | null };
+type OwnershipStatus = "held" | "sold";
+type SaleCurrency = "EUR" | "USD";
+type PortfolioEntry = {
+  id: string;
+  identifier: string;
+  taxYear: string;
+  status: FundStatus;
+  ownershipStatus: OwnershipStatus;
+  values: Values;
+  security: Security | null;
+  oekbResult: AutomaticOekbResult | null;
+  importResult: OekbExtraction | null;
+  showSale: boolean;
+  saleCurrency?: SaleCurrency;
+  saleDate?: string;
+  result: ReturnType<typeof calculateEtfTax>;
+  reportTracking?: ReportTracking;
+  savedAt: string;
+};
 
-const initialValues: Values = { units: 0, eurRate: 1, distributionsPerUnit: 0, deemedIncomePerUnit: 0, creditableTaxPerUnit: 0, costAdjustmentPerUnit: 0, saleProceeds: 0, saleCostBasis: 0, saleFees: 0, openingPricePerUnit: 0, closingPricePerUnit: 0 };
+const initialValues: Values = { units: 0, eurRate: 1, distributionsPerUnit: 0, deemedIncomePerUnit: 0, creditableTaxPerUnit: 0, costAdjustmentPerUnit: 0, baseAcquisitionCost: 0, saleProceeds: 0, saleCostBasis: 0, saleFees: 0, saleFxRate: 1, openingPricePerUnit: 0, closingPricePerUnit: 0 };
+const currentTaxYear = String(new Date().getUTCFullYear());
 const eur = new Intl.NumberFormat("de-AT", { style: "currency", currency: "EUR" });
 const reportDateFormatter = new Intl.DateTimeFormat("de-AT", { weekday: "long", day: "2-digit", month: "long", year: "numeric", timeZone: "UTC" });
+const shortDateFormatter = new Intl.DateTimeFormat("de-AT", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" });
 const geminiModels = ["gemini-3-flash-preview", "gemini-3.7-flash", "gemini-2.5-flash-lite"];
 
 function formatReportDate(date: string | null | undefined) {
   if (!date) return null;
   const parsed = new Date(`${date}T00:00:00Z`);
   return Number.isNaN(parsed.getTime()) ? date : reportDateFormatter.format(parsed);
+}
+
+function formatShortDate(date: string | null | undefined) {
+  if (!date) return null;
+  const parsed = new Date(`${date}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime()) ? date : shortDateFormatter.format(parsed);
+}
+
+const confidenceLabel = { high: "hohes Vertrauen", medium: "mittleres Vertrauen", low: "grobe Schätzung" } as const;
+
+function valuesWithExtraction(current: Values, extracted: OekbExtraction): Values {
+  return {
+    ...current,
+    eurRate: extracted.eurRate ?? current.eurRate,
+    distributionsPerUnit: extracted.actualDistributionPerUnit ?? current.distributionsPerUnit,
+    deemedIncomePerUnit: extracted.deemedIncomePerUnit ?? current.deemedIncomePerUnit,
+    creditableTaxPerUnit: extracted.creditableForeignTaxPerUnit ?? current.creditableTaxPerUnit,
+    costAdjustmentPerUnit: extracted.costBasisAdjustmentPerUnit ?? current.costAdjustmentPerUnit,
+  };
+}
+
+function calculateSnapshot(status: FundStatus, values: Values, showSale: boolean, saleCurrency: SaleCurrency = "EUR") {
+  return calculateEtfTax({
+    status,
+    ...values,
+    saleProceeds: showSale ? values.saleProceeds : 0,
+    saleCostBasis: showSale ? values.saleCostBasis : 0,
+    saleFees: showSale ? values.saleFees : 0,
+    saleFxRate: showSale && saleCurrency === "USD" ? values.saleFxRate : 1,
+  });
 }
 
 const extractionSchema = {
@@ -76,12 +131,16 @@ function Field({ label, value, onChange, suffix = "EUR", hint, step = "0.0001", 
 
 export default function EtfTaxAssistant() {
   const [identifier, setIdentifier] = useState("IE00B4L5Y983");
-  const [taxYear, setTaxYear] = useState("2025");
+  const [taxYear, setTaxYear] = useState(currentTaxYear);
   const [status, setStatus] = useState<FundStatus>("reporting");
   const [values, setValues] = useState<Values>(initialValues);
   const [security, setSecurity] = useState<Security | null>(null);
   const [lookupState, setLookupState] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [showSale, setShowSale] = useState(false);
+  const [saleCurrency, setSaleCurrency] = useState<SaleCurrency>("EUR");
+  const [saleDate, setSaleDate] = useState("");
+  const [saleFxState, setSaleFxState] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [saleFxInfo, setSaleFxInfo] = useState<{ date?: string; source?: string; error?: string } | null>(null);
   const [showResults, setShowResults] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
   const [pastedOekb, setPastedOekb] = useState("");
@@ -91,28 +150,44 @@ export default function EtfTaxAssistant() {
   const [importState, setImportState] = useState<"idle" | "extracting" | "done" | "error">("idle");
   const [importResult, setImportResult] = useState<OekbExtraction | null>(null);
   const [importError, setImportError] = useState("");
-  const [oekbState, setOekbState] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [oekbState, setOekbState] = useState<"idle" | "loading" | "done" | "missing" | "error">("idle");
   const [oekbResult, setOekbResult] = useState<AutomaticOekbResult | null>(null);
   const [oekbError, setOekbError] = useState("");
+  const [pendingOekbInfo, setPendingOekbInfo] = useState<PendingOekbInfo | null>(null);
+  const [retryingPositionId, setRetryingPositionId] = useState<string | null>(null);
+  const [ownershipStatus, setOwnershipStatus] = useState<OwnershipStatus>("held");
+  const [portfolio, setPortfolio] = useState<PortfolioEntry[]>([]);
+  const [activePositionId, setActivePositionId] = useState<string | null>(null);
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const saved = localStorage.getItem("etf-steuerassistent-at");
       if (saved) {
         try {
-          const parsed = JSON.parse(saved) as { identifier?: string; taxYear?: string; status?: FundStatus; values?: Values };
+          const parsed = JSON.parse(saved) as { identifier?: string; taxYear?: string; status?: FundStatus; values?: Values; ownershipStatus?: OwnershipStatus; portfolio?: PortfolioEntry[]; activePositionId?: string | null; showSale?: boolean; saleCurrency?: SaleCurrency; saleDate?: string };
           if (parsed.identifier) setIdentifier(parsed.identifier);
           if (parsed.taxYear) setTaxYear(parsed.taxYear);
           if (parsed.status) setStatus(parsed.status);
           if (parsed.values) setValues({ ...initialValues, ...parsed.values });
+          if (parsed.ownershipStatus) setOwnershipStatus(parsed.ownershipStatus);
+          if (Array.isArray(parsed.portfolio)) setPortfolio(parsed.portfolio.map((entry) => ({ ...entry, values: { ...initialValues, ...entry.values }, saleCurrency: entry.saleCurrency ?? "EUR", saleDate: entry.saleDate ?? "" })));
+          if (parsed.activePositionId) setActivePositionId(parsed.activePositionId);
+          if (parsed.showSale) setShowSale(true);
+          if (parsed.saleCurrency) setSaleCurrency(parsed.saleCurrency);
+          if (parsed.saleDate) setSaleDate(parsed.saleDate);
         } catch { /* Ignore broken local drafts. */ }
       }
       setGeminiKey(localStorage.getItem("etf-steuer-gemini-key") ?? "");
+      setHydrated(true);
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
 
-  useEffect(() => { localStorage.setItem("etf-steuerassistent-at", JSON.stringify({ identifier, taxYear, status, values })); }, [identifier, taxYear, status, values]);
+  useEffect(() => {
+    if (!hydrated) return;
+    localStorage.setItem("etf-steuerassistent-at", JSON.stringify({ identifier, taxYear, status, values, ownershipStatus, portfolio, activePositionId, showSale, saleCurrency, saleDate }));
+  }, [identifier, taxYear, status, values, ownershipStatus, portfolio, activePositionId, showSale, saleCurrency, saleDate, hydrated]);
   useEffect(() => {
     if (saveGeminiKey && geminiKey) localStorage.setItem("etf-steuer-gemini-key", geminiKey);
     else if (!saveGeminiKey) localStorage.removeItem("etf-steuer-gemini-key");
@@ -124,14 +199,125 @@ export default function EtfTaxAssistant() {
     saleProceeds: showSale ? values.saleProceeds : 0,
     saleCostBasis: showSale ? values.saleCostBasis : 0,
     saleFees: showSale ? values.saleFees : 0,
-  }), [status, values, showSale]);
+    saleFxRate: showSale && saleCurrency === "USD" ? values.saleFxRate : 1,
+  }), [status, values, showSale, saleCurrency]);
+  const portfolioForYear = useMemo(() => portfolio.filter((entry) => entry.taxYear === taxYear), [portfolio, taxYear]);
+  const currentYearPortfolio = useMemo(() => portfolio.filter((entry) => entry.taxYear === currentTaxYear), [portfolio]);
+  const currentYearPending = useMemo(() => currentYearPortfolio.filter((entry) => entry.reportTracking?.state === "pending"), [currentYearPortfolio]);
+  const currentYearAvailable = currentYearPortfolio.length - currentYearPending.length;
+  const pendingForYear = useMemo(() => portfolioForYear.filter((entry) => entry.reportTracking?.state === "pending"), [portfolioForYear]);
+  const readyForYear = useMemo(() => portfolioForYear.filter((entry) => entry.reportTracking?.state !== "pending"), [portfolioForYear]);
+  const portfolioTotals = useMemo(() => readyForYear.reduce((totals, entry) => ({
+    estimatedTax: totals.estimatedTax + entry.result.estimatedTax,
+    taxableTotal: totals.taxableTotal + entry.result.taxableTotal,
+    kz898: totals.kz898 + entry.result.kz898,
+    kz937: totals.kz937 + entry.result.kz937,
+    kz994: totals.kz994 + entry.result.kz994,
+    kz892: totals.kz892 + entry.result.kz892,
+    kz998: totals.kz998 + entry.result.kz998,
+  }), { estimatedTax: 0, taxableTotal: 0, kz898: 0, kz937: 0, kz994: 0, kz892: 0, kz998: 0 }), [readyForYear]);
+  const filingResult = readyForYear.length > 0 ? portfolioTotals : result;
   const oekbUrl = identifier.length === 12 ? `https://my.oekb.at/kapitalmarkt-services/kms-output/fonds-info/sd/af/f?isin=${encodeURIComponent(identifier)}` : "https://my.oekb.at/kapitalmarkt-services/kms-output/fonds-info/sd/af/f";
   const perUnitCurrency = oekbResult?.currency ?? importResult?.currency ?? "FW";
   const activeImport = oekbState === "done" ? oekbResult : importState === "done" ? importResult : null;
   const formattedReportDate = formatReportDate(activeImport?.reportDate);
   const importedValue = (value: number | null | undefined) => activeImport !== null && value !== null && value !== undefined;
   const unitsComplete = values.units > 0;
+  const reportStillMissing = oekbState === "missing" && importState !== "done";
+  const normalizedIdentifier = identifier.trim().toUpperCase();
+  const correctionHistory = (() => {
+    const corrections: Array<CostBasisCorrection & { id: string; source: "saved" | "current" }> = portfolio
+      .filter((entry) => entry.identifier === normalizedIdentifier && entry.status === "reporting" && entry.reportTracking?.state !== "pending")
+      .map((entry) => ({
+        id: entry.id,
+        taxYear: entry.taxYear,
+        reportDate: entry.oekbResult?.reportDate ?? entry.importResult?.reportDate ?? null,
+        amount: entry.id === activePositionId ? result.costAdjustment : entry.result.costAdjustment,
+        source: entry.id === activePositionId ? "current" as const : "saved" as const,
+      }));
+    if (!activePositionId && normalizedIdentifier && unitsComplete && activeImport?.reportDate) {
+      corrections.push({ id: "current-preview", taxYear, reportDate: activeImport.reportDate, amount: result.costAdjustment, source: "current" });
+    }
+    return corrections.sort((a, b) => (a.reportDate ?? a.taxYear).localeCompare(b.reportDate ?? b.taxYear));
+  })();
+  const costBasisLedger = calculateCorrectedCostBasis(values.baseAcquisitionCost, correctionHistory, showSale && saleDate ? saleDate : undefined);
+  const saleRate = saleCurrency === "USD" ? values.saleFxRate || 1 : 1;
+  const convertedSaleProceeds = values.saleProceeds * saleRate;
+  const convertedSaleFees = values.saleFees * saleRate;
   const setField = (field: NumberField, value: number) => setValues((current) => ({ ...current, [field]: value }));
+
+  function resetEditor() {
+    setIdentifier(""); setTaxYear(currentTaxYear); setStatus("reporting"); setValues(initialValues);
+    setSecurity(null); setLookupState("idle"); setShowSale(false); setSaleCurrency("EUR"); setSaleDate(""); setSaleFxState("idle"); setSaleFxInfo(null); setShowResults(false);
+    setPastedOekb(""); setImportState("idle"); setImportResult(null); setImportError("");
+    setOekbState("idle"); setOekbResult(null); setOekbError(""); setPendingOekbInfo(null); setOwnershipStatus("held"); setActivePositionId(null);
+  }
+
+  function editPosition(entry: PortfolioEntry) {
+    setIdentifier(entry.identifier); setTaxYear(entry.taxYear); setStatus(entry.status); setValues({ ...initialValues, ...entry.values });
+    setSecurity(entry.security); setLookupState(entry.security ? "done" : "idle"); setShowSale(entry.showSale); setSaleCurrency(entry.saleCurrency ?? "EUR"); setSaleDate(entry.saleDate ?? ""); setSaleFxState(entry.saleCurrency === "USD" && entry.values.saleFxRate ? "done" : "idle"); setSaleFxInfo(null); setShowResults(entry.reportTracking?.state !== "pending");
+    setImportResult(entry.importResult); setImportState(entry.importResult ? "done" : "idle"); setImportError("");
+    setOekbResult(entry.oekbResult); setOekbState(entry.oekbResult ? "done" : entry.reportTracking?.state === "pending" ? "missing" : "idle");
+    setOekbError(entry.reportTracking?.message ?? "");
+    setPendingOekbInfo(entry.reportTracking?.state === "pending" ? { error: entry.reportTracking.message ?? "Für dieses Steuerjahr liegt noch keine Jahresmeldung vor.", availableYears: [], reportHistory: entry.reportTracking.reportHistory, prediction: entry.reportTracking.prediction } : null);
+    setOwnershipStatus(entry.ownershipStatus); setActivePositionId(entry.id);
+    document.querySelector("#rechner")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function savePosition() {
+    if (!unitsComplete || !identifier.trim()) return;
+    const normalizedIdentifier = identifier.trim().toUpperCase();
+    setPortfolio((current) => {
+      const existing = activePositionId
+        ? current.find((entry) => entry.id === activePositionId)
+        : current.find((entry) => entry.identifier === normalizedIdentifier && entry.taxYear === taxYear);
+      const id = existing?.id ?? `etf-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const entry: PortfolioEntry = {
+        id, identifier: normalizedIdentifier, taxYear, status, ownershipStatus, values: { ...values }, security,
+        oekbResult, importResult, showSale, saleCurrency, saleDate, result,
+        reportTracking: oekbResult ? { state: "available", lastCheckedAt: new Date().toISOString(), message: null, reportHistory: oekbResult.reportHistory, prediction: oekbResult.prediction } : existing?.reportTracking,
+        savedAt: new Date().toISOString(),
+      };
+      setActivePositionId(id);
+      return existing ? current.map((item) => item.id === id ? entry : item) : [...current, entry];
+    });
+    setShowResults(true);
+  }
+
+  function removePosition(entry: PortfolioEntry) {
+    if (!window.confirm(`${entry.security?.name ?? entry.identifier} wirklich aus dem Portfolio entfernen?`)) return;
+    setPortfolio((current) => current.filter((item) => item.id !== entry.id));
+    if (activePositionId === entry.id) resetEditor();
+  }
+
+  function trackPendingReport(normalizedIdentifier: string, requestedTaxYear: string, info: PendingOekbInfo) {
+    if (requestedTaxYear !== currentTaxYear) return;
+    const checkedAt = new Date().toISOString();
+    setPortfolio((current) => {
+      const existing = current.find((entry) => entry.identifier === normalizedIdentifier && entry.taxYear === requestedTaxYear);
+      const id = existing?.id ?? `etf-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const pendingValues = existing?.values ?? { ...initialValues };
+      const entry: PortfolioEntry = {
+        id,
+        identifier: normalizedIdentifier,
+        taxYear: requestedTaxYear,
+        status: existing?.status ?? "reporting",
+        ownershipStatus: existing?.ownershipStatus ?? ownershipStatus,
+        values: pendingValues,
+        security: existing?.security ?? (security?.identifier === normalizedIdentifier ? security : null),
+        oekbResult: null,
+        importResult: existing?.importResult ?? null,
+        showSale: existing?.showSale ?? false,
+        saleCurrency: existing?.saleCurrency ?? "EUR",
+        saleDate: existing?.saleDate ?? "",
+        result: existing?.result ?? calculateSnapshot("reporting", pendingValues, false),
+        reportTracking: { state: "pending", lastCheckedAt: checkedAt, message: info.error, reportHistory: info.reportHistory, prediction: info.prediction },
+        savedAt: existing?.savedAt ?? checkedAt,
+      };
+      setActivePositionId(id);
+      return existing ? current.map((item) => item.id === id ? entry : item) : [...current, entry];
+    });
+  }
 
   async function addEurRate(extracted: OekbExtraction): Promise<OekbExtraction> {
     if (extracted.eurRate !== null || !extracted.currency || !extracted.reportDate) return extracted;
@@ -149,29 +335,77 @@ export default function EtfTaxAssistant() {
     };
   }
 
-  async function loadOekbData(normalizedIdentifier = identifier.trim().toUpperCase()) {
+  async function loadSaleFxRate(requestedDate = saleDate) {
+    if (saleCurrency === "EUR") {
+      setField("saleFxRate", 1);
+      setSaleFxState("done");
+      setSaleFxInfo({ date: requestedDate || undefined, source: "EUR-Betrag – keine Umrechnung" });
+      return;
+    }
+    if (!requestedDate) {
+      setSaleFxState("error");
+      setSaleFxInfo({ error: "Bitte zuerst das Verkaufsdatum eingeben." });
+      return;
+    }
+    setSaleFxState("loading"); setSaleFxInfo(null);
+    try {
+      const response = await fetch(`/api/fx?currency=USD&date=${encodeURIComponent(requestedDate)}`);
+      const data = await response.json() as { rate?: number; date?: string; source?: string; error?: string };
+      if (!response.ok || typeof data.rate !== "number") throw new Error(data.error ?? "USD-Kurs konnte nicht geladen werden.");
+      setField("saleFxRate", data.rate);
+      setSaleFxState("done");
+      setSaleFxInfo({ date: data.date, source: data.source });
+    } catch (error) {
+      setSaleFxState("error");
+      setSaleFxInfo({ error: error instanceof Error ? error.message : "USD-Kurs konnte nicht geladen werden." });
+    }
+  }
+
+  async function loadOekbData(normalizedIdentifier = identifier.trim().toUpperCase(), requestedTaxYear = taxYear) {
     if (!/^[A-Z]{2}[A-Z0-9]{9}\d$/.test(normalizedIdentifier)) {
       setOekbError("Der automatische OeKB-Abruf benötigt eine 12-stellige ISIN; eine WKN reicht dafür nicht.");
       setOekbState("error");
       return null;
     }
-    setOekbState("loading"); setOekbError(""); setOekbResult(null); setShowResults(false);
+    setOekbState("loading"); setOekbError(""); setOekbResult(null); setPendingOekbInfo(null); setShowResults(false);
     try {
-      const response = await fetch(`/api/oekb?isin=${encodeURIComponent(normalizedIdentifier)}&taxYear=${encodeURIComponent(taxYear)}`);
-      const data = await response.json() as AutomaticOekbResult & { error?: string };
-      if (!response.ok) throw new Error(data.error ?? "OeKB-Abruf fehlgeschlagen.");
+      const response = await fetch(`/api/oekb?isin=${encodeURIComponent(normalizedIdentifier)}&taxYear=${encodeURIComponent(requestedTaxYear)}`);
+      const data = await response.json() as AutomaticOekbResult & PendingOekbInfo;
+      if (!response.ok) {
+        if (response.status === 404 && requestedTaxYear === currentTaxYear) {
+          const pending = { error: data.error ?? `Für ${requestedTaxYear} wurde noch keine OeKB-Jahresmeldung gefunden.`, availableYears: data.availableYears ?? [], reportHistory: data.reportHistory ?? [], prediction: data.prediction ?? null };
+          setPendingOekbInfo(pending); setOekbError(pending.error); setOekbState("missing");
+          trackPendingReport(normalizedIdentifier, requestedTaxYear, pending);
+          return null;
+        }
+        throw new Error(data.error ?? "OeKB-Abruf fehlgeschlagen.");
+      }
       const enriched = await addEurRate(data) as AutomaticOekbResult;
       applyExtraction(enriched);
       setOekbResult(enriched);
+      setPendingOekbInfo(null);
       setOekbState("done");
-      setSecurity({
+      const foundSecurity: Security = {
         identifier: normalizedIdentifier,
         identifierType: "ISIN",
         name: enriched.fundName,
         ticker: null,
         exchange: null,
         verified: true,
-      });
+      };
+      setSecurity(foundSecurity);
+      setPortfolio((current) => current.map((entry) => {
+        if (entry.identifier !== normalizedIdentifier || entry.taxYear !== requestedTaxYear || entry.reportTracking?.state !== "pending") return entry;
+        const nextValues = valuesWithExtraction(entry.values, enriched);
+        return {
+          ...entry,
+          values: nextValues,
+          security: foundSecurity,
+          oekbResult: enriched,
+          result: calculateSnapshot(entry.status, nextValues, entry.showSale, entry.saleCurrency ?? "EUR"),
+          reportTracking: { state: "available", lastCheckedAt: new Date().toISOString(), message: null, reportHistory: enriched.reportHistory, prediction: enriched.prediction },
+        };
+      }));
       return enriched;
     } catch (error) {
       setOekbError(error instanceof Error ? error.message : "OeKB-Abruf fehlgeschlagen.");
@@ -184,6 +418,10 @@ export default function EtfTaxAssistant() {
     event.preventDefault();
     const normalized = identifier.trim().toUpperCase();
     setIdentifier(normalized); setLookupState("loading"); setShowResults(false);
+    if (values.baseAcquisitionCost <= 0) {
+      const priorBase = portfolio.find((entry) => entry.identifier === normalized && entry.values.baseAcquisitionCost > 0)?.values.baseAcquisitionCost;
+      if (priorBase) setField("baseAcquisitionCost", priorBase);
+    }
     const securityPromise = fetch("/api/security", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ identifier: normalized }) })
       .then(async (response) => {
         const data = await response.json() as Security & { error?: string };
@@ -191,24 +429,27 @@ export default function EtfTaxAssistant() {
         return data;
       });
     const [oekbLookup, securityResult] = await Promise.allSettled([loadOekbData(normalized), securityPromise]);
-    if (securityResult.status === "fulfilled") setSecurity(securityResult.value);
+    if (securityResult.status === "fulfilled") {
+      setSecurity(securityResult.value);
+      setPortfolio((current) => current.map((entry) => entry.identifier === normalized && entry.taxYear === taxYear && entry.reportTracking?.state === "pending" ? { ...entry, security: securityResult.value } : entry));
+    }
     else if (oekbLookup.status !== "fulfilled" || !oekbLookup.value) setSecurity(null);
     setLookupState(securityResult.status === "fulfilled" || /^[A-Z]{2}[A-Z0-9]{9}\d$/.test(normalized) ? "done" : "error");
   }
 
   function applyExtraction(extracted: OekbExtraction) {
-    setValues((current) => ({
-      ...current,
-      eurRate: extracted.eurRate ?? current.eurRate,
-      distributionsPerUnit: extracted.actualDistributionPerUnit ?? current.distributionsPerUnit,
-      deemedIncomePerUnit: extracted.deemedIncomePerUnit ?? current.deemedIncomePerUnit,
-      creditableTaxPerUnit: extracted.creditableForeignTaxPerUnit ?? current.creditableTaxPerUnit,
-      costAdjustmentPerUnit: extracted.costBasisAdjustmentPerUnit ?? current.costAdjustmentPerUnit,
-    }));
+    setValues((current) => valuesWithExtraction(current, extracted));
     if (extracted.isin) setIdentifier(extracted.isin.toUpperCase());
     if (extracted.reportDate) setTaxYear(extracted.reportDate.slice(0, 4));
     setStatus("reporting");
     setShowResults(false);
+  }
+
+  async function retryPendingPosition(entry: PortfolioEntry) {
+    setRetryingPositionId(entry.id);
+    editPosition(entry);
+    await loadOekbData(entry.identifier, entry.taxYear);
+    setRetryingPositionId(null);
   }
 
   async function importOekbData() {
@@ -248,10 +489,30 @@ export default function EtfTaxAssistant() {
   }
 
   function downloadCsv() {
-    const rows = [["ETF-Steuerassistent Österreich", ""], ["Steuerjahr", taxYear], ["Kennung", identifier], ["ETF", security?.name ?? ""], ["E1kv KZ 898", result.kz898.toFixed(2)], ["E1kv KZ 937", result.kz937.toFixed(2)], ["E1kv KZ 994", result.kz994.toFixed(2)], ["E1kv KZ 892", result.kz892.toFixed(2)], ["E1kv KZ 998", result.kz998.toFixed(2)], ["Geschätzte Steuer", result.estimatedTax.toFixed(2)], ["AK-Korrektur", result.costAdjustment.toFixed(2)]];
+    const rows: Array<Array<string | number>> = [["ETF-Steuerassistent Österreich", ""], ["Steuerjahr", taxYear]];
+    if (portfolioForYear.length > 0) {
+      rows.push([], ["Portfolio-Positionen", portfolioForYear.length], ["ISIN", "ETF", "Status", "Stück am Meldetag", "Meldetag", "AK-Korrektur", "Ursprüngliche AK", "Verkaufswährung", "Verkaufsdatum", "Verkaufskurs EUR/FW", "Steuerschätzung"]);
+      for (const entry of portfolioForYear) rows.push([
+        entry.identifier,
+        entry.security?.name ?? entry.oekbResult?.fundName ?? "",
+        entry.reportTracking?.state === "pending" ? "OeKB-Meldung ausständig" : entry.ownershipStatus === "held" ? "Im Bestand" : "Verkauft",
+        entry.reportTracking?.state === "pending" && entry.values.units === 0 ? "" : entry.values.units,
+        entry.oekbResult?.reportDate ?? entry.importResult?.reportDate ?? "",
+        entry.reportTracking?.state === "pending" ? "" : entry.result.costAdjustment.toFixed(2),
+        entry.values.baseAcquisitionCost.toFixed(2),
+        entry.showSale ? entry.saleCurrency ?? "EUR" : "",
+        entry.showSale ? entry.saleDate ?? "" : "",
+        entry.showSale ? (entry.saleCurrency === "USD" ? entry.values.saleFxRate : 1).toFixed(6) : "",
+        entry.reportTracking?.state === "pending" ? "" : entry.result.estimatedTax.toFixed(2),
+      ]);
+      rows.push([]);
+    } else {
+      rows.push(["Kennung", identifier], ["ETF", security?.name ?? ""]);
+    }
+    rows.push(["E1kv KZ 898", filingResult.kz898.toFixed(2)], ["E1kv KZ 937", filingResult.kz937.toFixed(2)], ["E1kv KZ 994", filingResult.kz994.toFixed(2)], ["E1kv KZ 892", filingResult.kz892.toFixed(2)], ["E1kv KZ 998", filingResult.kz998.toFixed(2)], ["Geschätzte Steuer", filingResult.estimatedTax.toFixed(2)]);
     const csv = rows.map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(";")).join("\n");
     const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" }));
-    const anchor = document.createElement("a"); anchor.href = url; anchor.download = `ETF-Steuer-${taxYear}-${identifier || "Auswertung"}.csv`; anchor.click(); URL.revokeObjectURL(url);
+    const anchor = document.createElement("a"); anchor.href = url; anchor.download = portfolioForYear.length > 0 ? `ETF-Portfolio-Steuer-${taxYear}.csv` : `ETF-Steuer-${taxYear}-${identifier || "Auswertung"}.csv`; anchor.click(); URL.revokeObjectURL(url);
   }
 
   return <main>
@@ -268,6 +529,25 @@ export default function EtfTaxAssistant() {
 
     <section className="workspace" id="rechner">
       <div className="stepper" aria-label="Fortschritt"><div className="active"><b>1</b><span>ETF finden<small>ISIN oder WKN</small></span></div><i /><div className={oekbState === "done" ? "active" : ""}><b>2</b><span>Steuerdaten<small>OeKB-Werte</small></span></div><i /><div className={showResults ? "active" : ""}><b>3</b><span>Ergebnis<small>E1kv & Steuer</small></span></div></div>
+      <section className="portfolio-board" aria-label="ETF-Portfolio">
+        <div className="portfolio-head"><div><span className="mini-kicker">Mehrere ETFs gemeinsam verwalten</span><h2>Meine ETF-Positionen</h2><p>Aktuelle und bereits verkaufte Positionen bleiben getrennt gespeichert; die Summen werden automatisch zusammengeführt.</p></div><button type="button" onClick={resetEditor}>+ Weiteren ETF hinzufügen</button></div>
+        <div className="current-year-tracker"><span className="tracker-icon">◎</span><div><b>Meldungs-Tracker {currentTaxYear}</b><p>Beim Hinzufügen prüft das Tool sofort die OeKB. Noch fehlende Jahresmeldungen werden vorgemerkt und können später mit einem Klick erneut geprüft werden.</p></div><div className="tracker-counts"><span><b>{currentYearAvailable}</b> vorhanden</span><span className={currentYearPending.length ? "pending" : ""}><b>{currentYearPending.length}</b> ausständig</span></div></div>
+        {portfolio.length === 0 ? <div className="portfolio-empty"><span>＋</span><p><b>Noch keine Position gespeichert</b>Gib unten eine ISIN ein. Ist die aktuelle Jahresmeldung noch nicht da, wird der ETF automatisch im Tracker gespeichert.</p></div> : <>
+          <div className="portfolio-list">{portfolio.map((entry) => {
+            const tracking = entry.reportTracking;
+            const pending = tracking?.state === "pending";
+            const prediction = entry.oekbResult?.prediction ?? tracking?.prediction;
+            return <article className={`portfolio-item ${pending ? "pending" : ""} ${entry.id === activePositionId ? "active" : ""}`} key={entry.id}>
+              <div className="portfolio-item-top"><span className="fund-avatar">ETF</span><div><strong>{entry.security?.name ?? entry.oekbResult?.fundName ?? entry.identifier}</strong><small>{entry.identifier} · Steuerjahr {entry.taxYear}</small></div><div className="position-badges"><span className={`position-status ${entry.ownershipStatus}`}>{entry.ownershipStatus === "held" ? "Im Bestand" : "Verkauft"}</span>{pending && <span className="position-status report-pending">Meldung ausständig</span>}</div></div>
+              <div className="portfolio-item-data"><span><small>Stück am Meldetag</small><b>{pending && entry.values.units === 0 ? "nach Meldung" : entry.values.units.toLocaleString("de-AT")}</b></span><span><small>Meldetag</small><b>{formatShortDate(entry.oekbResult?.reportDate ?? entry.importResult?.reportDate) ?? (pending ? "noch offen" : "manuell prüfen")}</b></span><span><small>Voraussichtliche Steuer</small><b>{pending ? "noch offen" : eur.format(entry.result.estimatedTax)}</b></span></div>
+              <div className={`report-tracking-state ${pending ? "pending" : "available"}`}><span>{pending ? "…" : "✓"}</span><p>{pending ? <><b>OeKB-Jahresmeldung noch nicht vorhanden</b>Zuletzt geprüft {new Date(tracking.lastCheckedAt).toLocaleString("de-AT", { dateStyle: "medium", timeStyle: "short" })}. Der ETF bleibt gespeichert.</> : <><b>Jahresmeldung übernommen</b>{entry.oekbResult?.reportDate ? `Meldetag ${formatShortDate(entry.oekbResult.reportDate)}` : "Steuerwerte gespeichert"}</>}</p>{pending && <button type="button" onClick={() => retryPendingPosition(entry)} disabled={retryingPositionId === entry.id}>{retryingPositionId === entry.id ? "Prüfe …" : "Jetzt erneut prüfen"}</button>}</div>
+              <div className="portfolio-forecast"><span>◷</span><p>{prediction ? <><b>{pending ? "Meldung erwartet" : "Nächste Meldung wahrscheinlich"} {formatShortDate(prediction.expectedDate)}</b>Fenster {formatShortDate(prediction.windowStart)}–{formatShortDate(prediction.windowEnd)} · {confidenceLabel[prediction.confidence]}</> : <><b>Noch keine belastbare Prognose</b>Es sind zu wenige regelmäßige historische Jahresmeldungen vorhanden.</>}</p></div>
+              <div className="portfolio-actions"><button type="button" onClick={() => editPosition(entry)}>Bearbeiten</button><button type="button" onClick={() => removePosition(entry)}>Entfernen</button></div>
+            </article>;
+          })}</div>
+          <div className="portfolio-totals"><div><span>Portfolio-Schätzung {taxYear}</span><strong>{eur.format(portfolioTotals.estimatedTax)}</strong><small>{readyForYear.length} berechnet{pendingForYear.length ? ` · ${pendingForYear.length} Meldung${pendingForYear.length === 1 ? "" : "en"} noch ausständig` : ""} · Basis {eur.format(portfolioTotals.taxableTotal)}</small></div><div className="portfolio-codes">{[["898", portfolioTotals.kz898], ["937", portfolioTotals.kz937], ["994", portfolioTotals.kz994], ["892", portfolioTotals.kz892], ["998", portfolioTotals.kz998]].map(([code, amount]) => <span key={String(code)}><small>KZ {code}</small><b>{eur.format(Number(amount))}</b></span>)}</div></div>
+        </>}
+      </section>
       <div className="calculator-grid">
         <section className="card form-card">
           <div className="card-heading"><div><span className="section-number">01</span><h2>Welchen ETF hältst du?</h2></div><span className="source-badge">Wertpapier-Abgleich</span></div>
@@ -287,7 +567,8 @@ export default function EtfTaxAssistant() {
             <button className="oekb-button" type="button" onClick={() => loadOekbData()} disabled={oekbState === "loading"}>{oekbState === "loading" ? "OeKB-Daten werden geladen …" : "OeKB-Steuerdaten automatisch laden"}<span>→</span></button>
             <p className="privacy-copy">Kein Login und kein API-Key. Abfrage erfolgt erst nach deinem Klick und nur für die eingegebene ISIN.</p>
             {oekbState === "error" && <div className="import-message error-message"><b>Automatischer OeKB-Abruf nicht abgeschlossen</b><span>{oekbError}</span></div>}
-            {oekbState === "done" && oekbResult && <div className="import-message success-message"><div><b>✓ Offizielle Jahresmeldung übernommen</b><span>{oekbResult.source}{oekbResult.exchangeRateSource ? ` · Kurs: ${oekbResult.exchangeRateSource} vom ${oekbResult.exchangeRateDate}` : ""}</span></div><div className="import-chips"><span>Melde-ID {oekbResult.reportId}</span><span>{oekbResult.currency ?? "Währung offen"}</span><span>{oekbResult.reportDate ?? "Meldedatum offen"}</span><span>{[oekbResult.actualDistributionPerUnit, oekbResult.deemedIncomePerUnit, oekbResult.creditableForeignTaxPerUnit, oekbResult.costBasisAdjustmentPerUnit].filter((value) => value !== null).length}/4 Steuerwerte</span></div>{oekbResult.warnings.length > 0 && <details><summary>{oekbResult.warnings.length} Prüfhinweis{oekbResult.warnings.length === 1 ? "" : "e"}</summary><ul>{oekbResult.warnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}</ul></details>}</div>}
+            {oekbState === "missing" && pendingOekbInfo && <div className="import-message pending-message"><b>◷ Für {taxYear} noch keine Jahresmeldung</b><span>Der ETF wurde automatisch im Meldungs-Tracker gespeichert. Du kannst die Seite schließen und später bei der Position auf „Jetzt erneut prüfen“ klicken.</span>{pendingOekbInfo.prediction && <small>Voraussichtlich {formatShortDate(pendingOekbInfo.prediction.expectedDate)} · Fenster {formatShortDate(pendingOekbInfo.prediction.windowStart)}–{formatShortDate(pendingOekbInfo.prediction.windowEnd)}</small>}</div>}
+            {oekbState === "done" && oekbResult && <div className="import-message success-message"><div><b>✓ Offizielle Jahresmeldung übernommen</b><span>{oekbResult.source}{oekbResult.exchangeRateSource ? ` · Kurs: ${oekbResult.exchangeRateSource} vom ${oekbResult.exchangeRateDate}` : ""}</span></div><div className="import-chips"><span>Melde-ID {oekbResult.reportId}</span><span>{oekbResult.currency ?? "Währung offen"}</span><span>{oekbResult.reportDate ?? "Meldedatum offen"}</span><span>{[oekbResult.actualDistributionPerUnit, oekbResult.deemedIncomePerUnit, oekbResult.creditableForeignTaxPerUnit, oekbResult.costBasisAdjustmentPerUnit].filter((value) => value !== null).length}/4 Steuerwerte</span></div>{oekbResult.prediction ? <div className="prediction-box"><span>Voraussichtliche nächste Jahresmeldung</span><strong>ca. {formatReportDate(oekbResult.prediction.expectedDate)}</strong><small>Zeitfenster {formatShortDate(oekbResult.prediction.windowStart)}–{formatShortDate(oekbResult.prediction.windowEnd)} · {confidenceLabel[oekbResult.prediction.confidence]} · aus {oekbResult.prediction.sampleSize} Meldedaten</small><em>Prognose aus historischen Abständen, keine OeKB-Terminankündigung.</em></div> : <div className="prediction-box unavailable"><span>Nächste Jahresmeldung</span><strong>Noch nicht verlässlich prognostizierbar</strong><small>Mindestens zwei plausible historische Jahresmeldungen sind erforderlich.</small></div>}{oekbResult.warnings.length > 0 && <details><summary>{oekbResult.warnings.length} Prüfhinweis{oekbResult.warnings.length === 1 ? "" : "e"}</summary><ul>{oekbResult.warnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}</ul></details>}</div>}
           </section>
           <details className="fallback-import">
             <summary><span>Notfall-Import per Copy-Paste / Gemini</span><small>Nur falls der öffentliche OeKB-Export vorübergehend nicht erreichbar ist</small></summary>
@@ -305,6 +586,7 @@ export default function EtfTaxAssistant() {
             </section>
           </details>
           <div className="segmented" role="group" aria-label="Fondsstatus"><button className={status === "reporting" ? "selected" : ""} onClick={() => setStatus("reporting")} type="button"><b>Meldefonds</b><small>OeKB-Jahresmeldung vorhanden</small></button><button className={status === "non-reporting" ? "selected warning" : ""} onClick={() => setStatus("non-reporting")} type="button"><b>Nicht-Meldefonds</b><small>Pauschalbesteuerung</small></button></div>
+          <div className="ownership-toggle" role="group" aria-label="Status der ETF-Position"><span>Diese Position</span><button className={ownershipStatus === "held" ? "selected" : ""} type="button" onClick={() => setOwnershipStatus("held")}>✓ Halte ich noch</button><button className={ownershipStatus === "sold" ? "selected sold" : ""} type="button" onClick={() => { setOwnershipStatus("sold"); setShowSale(true); }}>Bereits verkauft</button></div>
           <section className={`holding-entry ${unitsComplete ? "complete" : ""}`} aria-label="Erforderliche Stückzahl">
             <div className="holding-entry-head"><div><span className="action-kicker">Deine einzige Pflichtangabe</span><h3>{status === "reporting" ? "Wie viele Anteile hattest du am Meldetag?" : "Wie viele Anteile sind zu berücksichtigen?"}</h3></div><span className="manual-badge">{unitsComplete ? "✓ EINGETRAGEN" : "JETZT EINGEBEN"}</span></div>
             {status === "reporting" && <div className={`holding-date ${formattedReportDate ? "known" : ""}`}><span>OeKB-Meldetag / steuerlicher Stichtag</span><strong>{formattedReportDate ?? "Wird nach dem OeKB-Import angezeigt"}</strong>{activeImport?.reportDate && <small>{activeImport.reportDate} · Bestand im Depotauszug an diesem Tag prüfen</small>}</div>}
@@ -316,20 +598,32 @@ export default function EtfTaxAssistant() {
             <Field label="EUR-Umrechnungskurs" value={values.eurRate} onChange={(v) => setField("eurRate", v)} suffix="EUR / FW" hint="Bei OeKB-Werten in EUR auf 1 lassen; sonst EUR-Wert einer Einheit Fondswährung am Meldetag." imported={status === "reporting" && importedValue(activeImport?.eurRate)} importLabel={activeImport?.exchangeRateSource ? "ECB ergänzt" : "importiert"} />
             {status === "reporting" ? <><Field label="Tatsächliche Ausschüttung je Anteil" value={values.distributionsPerUnit} onChange={(v) => setField("distributionsPerUnit", v)} suffix={perUnitCurrency} hint="Steuerpflichtige tatsächliche Ausschüttungen laut Meldung bzw. Ausschüttungsnachweis." imported={importedValue(activeImport?.actualDistributionPerUnit)} /><Field label="Ausschüttungsgleiche Erträge je Anteil" value={values.deemedIncomePerUnit} onChange={(v) => setField("deemedIncomePerUnit", v)} suffix={perUnitCurrency} hint="OeKB-Wert der ausschüttungsgleichen Erträge für Privatanleger." imported={importedValue(activeImport?.deemedIncomePerUnit)} /><Field label="Anrechenbare Quellensteuer je Anteil" value={values.creditableTaxPerUnit} onChange={(v) => setField("creditableTaxPerUnit", v)} suffix={perUnitCurrency} hint="Nur laut OeKB anrechenbarer Betrag, nicht automatisch jede ausländische Steuer." imported={importedValue(activeImport?.creditableForeignTaxPerUnit)} /><Field label="Korrektur Anschaffungskosten je Anteil" value={values.costAdjustmentPerUnit} onChange={(v) => setField("costAdjustmentPerUnit", v)} suffix={perUnitCurrency} hint="Für den späteren Verkaufsgewinn fortschreiben; kann laut Meldung auch negativ sein." allowNegative imported={importedValue(activeImport?.costBasisAdjustmentPerUnit)} /></> : <><Field label="Rücknahmepreis Jahresanfang" value={values.openingPricePerUnit} onChange={(v) => setField("openingPricePerUnit", v)} hint="Preis zu Beginn des Kalenderjahres; bei unterjährigem Kauf grundsätzlich der Anschaffungspreis." /><Field label="Rücknahmepreis Jahresende" value={values.closingPricePerUnit} onChange={(v) => setField("closingPricePerUnit", v)} hint="Letzter im Kalenderjahr festgesetzter Rücknahmepreis." /><Field label="Tatsächliche Ausschüttung je Anteil" value={values.distributionsPerUnit} onChange={(v) => setField("distributionsPerUnit", v)} /></>}
           </div>
-          <button className="sale-toggle" type="button" onClick={() => setShowSale((value) => !value)}><span>{showSale ? "−" : "+"}</span> ETF im Steuerjahr verkauft?</button>
-          {showSale && <div className="field-grid sale-fields"><Field label="Verkaufserlös gesamt" value={values.saleProceeds} onChange={(v) => setField("saleProceeds", v)} /><Field label="Fortgeschriebene Anschaffungskosten" value={values.saleCostBasis} onChange={(v) => setField("saleCostBasis", v)} hint="Kaufkosten zuzüglich aller bisherigen OeKB-AK-Korrekturen." /><Field label="Verkaufsspesen" value={values.saleFees} onChange={(v) => setField("saleFees", v)} /></div>}
-          <button className="calculate" type="button" onClick={() => setShowResults(true)} disabled={!unitsComplete}>{unitsComplete ? "Steuer & Kennzahlen berechnen" : "Bitte zuerst Stückzahl eingeben"} <span>→</span></button><p className="local-note">🔒 Entwurf wird nur in diesem Browser gespeichert.</p>
+          <section className="cost-basis-ledger" aria-label="Anschaffungskosten-Verlauf">
+            <div className="ledger-heading"><div><span className="mini-kicker">Jahresübergreifend je ISIN</span><h3>Anschaffungskosten-Verlauf</h3><p>Das Tool addiert die gespeicherten OeKB-Korrekturen zur ursprünglichen Kostenbasis. Positive Korrekturen erhöhen, negative vermindern die steuerlichen Anschaffungskosten.</p></div><span className="ledger-total">{eur.format(costBasisLedger.correctedCostBasis)}</span></div>
+            <Field className="base-cost-field" label="Ursprüngliche Anschaffungskosten dieser Anteile" value={values.baseAcquisitionCost} onChange={(v) => setField("baseAcquisitionCost", v)} hint="Kaufpreis inklusive Anschaffungsnebenkosten für genau die Anteile, deren Verlauf du hier führst." />
+            {correctionHistory.length > 0 ? <div className="ledger-list">{correctionHistory.map((correction) => {
+              const included = costBasisLedger.eligibleCorrections.includes(correction);
+              return <div className={!included ? "excluded" : ""} key={correction.id}><span><b>Steuerjahr {correction.taxYear}</b><small>{formatShortDate(correction.reportDate) ?? "Meldetag fehlt"}{correction.source === "current" ? " · aktuelle Berechnung" : " · gespeichert"}</small></span><strong className={correction.amount < 0 ? "negative" : ""}>{correction.amount >= 0 ? "+" : ""}{eur.format(correction.amount)}</strong>{!included && <em>nach Verkauf</em>}</div>;
+            })}</div> : <p className="ledger-empty">Noch keine Jahreskorrektur gespeichert. Nach der ersten Berechnung erscheint sie hier automatisch.</p>}
+            <div className="ledger-summary"><span><small>Ursprüngliche Kosten</small><b>{eur.format(values.baseAcquisitionCost)}</b></span><span><small>{saleDate ? "Korrekturen bis Verkauf" : "Korrekturen gesamt"}</small><b className={costBasisLedger.totalCorrection < 0 ? "negative" : ""}>{costBasisLedger.totalCorrection >= 0 ? "+" : ""}{eur.format(costBasisLedger.totalCorrection)}</b></span><span><small>Fortgeschriebene AK</small><b>{eur.format(costBasisLedger.correctedCostBasis)}</b></span></div>
+            <button className="use-cost-basis" type="button" onClick={() => { setField("saleCostBasis", costBasisLedger.correctedCostBasis); setShowSale(true); }}>Als Verkaufs-Anschaffungskosten übernehmen →</button>
+            <p className="ledger-warning">Bei Teilverkäufen nur die ursprünglichen Kosten und Korrekturen der tatsächlich verkauften Anteile übernehmen. Die Auswahl von Anschaffungslosen kann das Tool nicht aus deinem Depot ableiten.</p>
+          </section>
+          <button className="sale-toggle" type="button" onClick={() => setShowSale((value) => !value)}><span>{showSale ? "−" : "+"}</span>{ownershipStatus === "sold" ? "Verkaufsdaten dieser Position" : "ETF im Steuerjahr ganz oder teilweise verkauft?"}</button>
+          {showSale && <section className="sale-fields" aria-label="Verkaufsdaten"><div className="sale-meta"><label><span>Währung des Verkaufserlöses</span><select value={saleCurrency} onChange={(event) => { const currency = event.target.value as SaleCurrency; setSaleCurrency(currency); setSaleFxState(currency === "EUR" ? "done" : "idle"); setSaleFxInfo(null); if (currency === "EUR") setField("saleFxRate", 1); }}><option value="EUR">EUR</option><option value="USD">USD</option></select></label><label><span>Verkaufsdatum</span><input type="date" value={saleDate} onChange={(event) => { const date = event.target.value; setSaleDate(date); setSaleFxState("idle"); setSaleFxInfo(null); if (saleCurrency === "USD" && date) void loadSaleFxRate(date); }} /></label></div><div className="field-grid"><Field label="Verkaufserlös gesamt" value={values.saleProceeds} onChange={(v) => setField("saleProceeds", v)} suffix={saleCurrency} /><Field label="Fortgeschriebene Anschaffungskosten" value={values.saleCostBasis} onChange={(v) => setField("saleCostBasis", v)} suffix="EUR" hint="Kaufkosten zuzüglich aller bisherigen OeKB-AK-Korrekturen bis zum Verkauf." /><Field label="Verkaufsspesen" value={values.saleFees} onChange={(v) => setField("saleFees", v)} suffix={saleCurrency} />{saleCurrency === "USD" && <Field label="EUR-Umrechnungskurs am Verkaufstag" value={values.saleFxRate} onChange={(v) => { setField("saleFxRate", v); setSaleFxState("done"); }} suffix="EUR / USD" step="0.000001" importLabel="ECB geladen" imported={saleFxState === "done"} />}</div>{saleCurrency === "USD" && <div className={`sale-fx-box ${saleFxState}`}><div><b>{saleFxState === "loading" ? "ECB-Kurs wird geladen …" : saleFxState === "done" ? `✓ ${eur.format(convertedSaleProceeds)} Erlös in EUR` : "USD automatisch in EUR umrechnen"}</b><span>{saleFxState === "done" ? `${eur.format(convertedSaleFees)} Spesen · ${saleFxInfo?.source ?? "Referenzkurs"}${saleFxInfo?.date ? ` vom ${saleFxInfo.date}` : ""}` : saleFxInfo?.error ?? "Verkaufsdatum wählen oder Kurs manuell eintragen."}</span></div><button type="button" onClick={() => loadSaleFxRate()} disabled={saleFxState === "loading" || !saleDate}>{saleFxState === "loading" ? "Lädt …" : "ECB-Kurs neu laden"}</button></div>}<p className="sale-note">Der ECB-Referenzkurs dient als Rechenhilfe. Prüfe vor der Abgabe, welche Umrechnungsmethode für deine konkrete österreichische Veranlagung maßgeblich ist.</p></section>}
+          <button className="calculate" type="button" onClick={savePosition} disabled={!unitsComplete || !identifier.trim() || reportStillMissing}>{reportStillMissing ? "Meldung noch ausständig – später erneut prüfen" : unitsComplete ? (activePositionId ? "Berechnung im Portfolio aktualisieren" : "Berechnen & ETF im Portfolio speichern") : "Bitte zuerst Stückzahl eingeben"} <span>→</span></button><p className="local-note">🔒 Entwurf, Portfolio und Meldungs-Tracker werden nur in diesem Browser gespeichert.</p>
         </section>
 
         <aside className="results-column">
           <section className={`card result-card ${showResults ? "revealed" : ""}`}><div className="result-top"><span>Voraussichtliche Steuer</span><strong>{showResults ? eur.format(result.estimatedTax) : "—"}</strong><small>27,5 % abzüglich anrechenbarer Quellensteuer</small></div><div className="result-metrics"><div><span>Steuerpflichtige Basis</span><b>{showResults ? eur.format(result.taxableTotal) : "—"}</b></div><div><span>AK-Korrektur</span><b className={result.costAdjustment < 0 ? "negative" : ""}>{showResults ? `${result.costAdjustment >= 0 ? "+" : ""}${eur.format(result.costAdjustment)}` : "—"}</b></div></div>{!showResults && <div className="empty-state"><span>↳</span><p>Fülle links die Fondsdaten aus. Hier erscheinen Steuer und FinanzOnline-Felder.</p></div>}</section>
-          {showResults && <section className="card filing-card" id="finanzonline"><div className="filing-title"><div><span className="mini-kicker">FinanzOnline · E1kv {taxYear}</span><h3>Diese Werte eintragen</h3></div><button onClick={() => window.print()} aria-label="Drucken">↗</button></div><div className="code-list">{[["898", "Tatsächliche Ausschüttungen", result.kz898], ["937", "Ausschüttungsgleiche Erträge", result.kz937], ["994", "Realisierte Wertsteigerungen", result.kz994], ["892", "Realisierte Verluste", result.kz892], ["998", "Anrechenbare ausländische Steuer", result.kz998]].map(([code, label, amount]) => <button className="code-row" key={String(code)} onClick={() => copyValue(String(code), Number(amount))}><span className="code">KZ {code}</span><span>{label}</span><strong>{eur.format(Number(amount))}</strong><em>{copied === code ? "kopiert" : "□"}</em></button>)}</div><div className="filing-actions"><button onClick={downloadCsv}>CSV-Nachweis laden</button><a href="https://finanzonline.bmf.gv.at/fon/" target="_blank" rel="noreferrer">FinanzOnline öffnen ↗</a></div></section>}
+          {showResults && <section className="card filing-card" id="finanzonline"><div className="filing-title"><div><span className="mini-kicker">FinanzOnline · E1kv {taxYear}</span><h3>{readyForYear.length > 1 ? "Portfolio-Summen eintragen" : "Diese Werte eintragen"}</h3>{(readyForYear.length > 1 || pendingForYear.length > 0) && <small className="portfolio-filing-note">{readyForYear.length} berechnete Position{readyForYear.length === 1 ? "" : "en"}{pendingForYear.length ? ` · ${pendingForYear.length} noch nicht enthalten` : ""}</small>}</div><button onClick={() => window.print()} aria-label="Drucken">↗</button></div><div className="code-list">{[["898", "Tatsächliche Ausschüttungen", filingResult.kz898], ["937", "Ausschüttungsgleiche Erträge", filingResult.kz937], ["994", "Realisierte Wertsteigerungen", filingResult.kz994], ["892", "Realisierte Verluste", filingResult.kz892], ["998", "Anrechenbare ausländische Steuer", filingResult.kz998]].map(([code, label, amount]) => <button className="code-row" key={String(code)} onClick={() => copyValue(String(code), Number(amount))}><span className="code">KZ {code}</span><span>{label}</span><strong>{eur.format(Number(amount))}</strong><em>{copied === code ? "kopiert" : "□"}</em></button>)}</div><div className="filing-actions"><button onClick={downloadCsv}>{portfolioForYear.length > 1 ? "Portfolio-CSV laden" : "CSV-Nachweis laden"}</button><a href="https://finanzonline.bmf.gv.at/fon/" target="_blank" rel="noreferrer">FinanzOnline öffnen ↗</a></div></section>}
           <section className="card checklist"><h3>Damit das Ergebnis stimmt</h3><ul><li><span>1</span><p><b>Meldedatum statt Geschäftsjahr</b>Du versteuerst im Kalenderjahr der Veröffentlichung.</p></li><li><span>2</span><p><b>Stückzahl am Meldetag</b>Käufe danach zählen für diese Jahresmeldung nicht.</p></li><li><span>3</span><p><b>Anschaffungskosten fortschreiben</b>Sonst zahlst du beim Verkauf womöglich doppelt.</p></li></ul></section>
         </aside>
       </div>
     </section>
 
     <section className="knowledge" id="wissen"><div><p className="eyebrow">Kurz erklärt</p><h2>Was der Rechner für dich trennt</h2></div><div className="knowledge-grid"><article><span>01</span><h3>Ausschüttungen</h3><p>Tatsächlich ausbezahlte, steuerpflichtige Fondserträge landen bei einem Auslandsdepot in KZ 898.</p></article><article><span>02</span><h3>Thesaurierung</h3><p>Auch ein ETF ohne Auszahlung kann ausschüttungsgleiche Erträge erzeugen. Dafür ist KZ 937 vorgesehen.</p></article><article><span>03</span><h3>Verkauf</h3><p>Gewinn oder Verlust entsteht auf Basis der steuerlich fortgeschriebenen Anschaffungskosten.</p></article></div></section>
+    <section className="following-years" id="folgejahre"><div className="following-intro"><p className="eyebrow">Fortführung statt Neustart</p><h2>So gehst du in den Folgejahren vor</h2><p>Jede OeKB-Jahresmeldung ist ein weiterer Baustein deiner steuerlichen Kostenbasis. Das Portfolio speichert die Schritte lokal und führt sie je ISIN zusammen.</p></div><ol><li><span>1</span><div><b>Neue Jahresmeldung laden</b><p>Öffne die Position im jeweiligen Steuerjahr. Fehlt die Meldung noch, bleibt sie im Meldungs-Tracker vorgemerkt.</p></div></li><li><span>2</span><div><b>Stückzahl am Meldetag eintragen</b><p>Die Korrektur wird mit genau dem Bestand berechnet, den du am veröffentlichten Stichtag hattest.</p></div></li><li><span>3</span><div><b>Jahreskorrektur speichern</b><p>Positive Beträge erhöhen, negative vermindern die Anschaffungskosten. CSV und OeKB-Nachweis aufbewahren.</p></div></li><li><span>4</span><div><b>Beim Verkauf bis zum Verkaufsdatum fortschreiben</b><p>Ursprüngliche Kosten plus alle davor veröffentlichten Korrekturen bilden die Verkaufsbasis. Spätere Meldungen werden ausgeschlossen.</p></div></li><li><span>5</span><div><b>Teilverkäufe sauber zuordnen</b><p>Nur Kosten und Korrekturen der verkauften Anteile verwenden; verbleibende Anteile mit ihrer Restbasis weiterführen.</p></div></li></ol><aside><b>Wichtig</b><p>Die automatische Fortschreibung ersetzt keine Depot-Losrechnung oder individuelle Steuerberatung. Besonders bei mehreren Käufen, Teilverkäufen, Depotüberträgen und abweichenden Broker-Abrechnungen die Zuordnung prüfen.</p></aside></section>
     <footer><div className="brand footer-brand"><span className="brand-mark">AT</span><span><strong>ETF-Steuer</strong><small>Assistent Österreich</small></span></div><p>Rechenhilfe für österreichische Privatanleger · Keine Steuerberatung. Im Zweifel OeKB-Meldung, aktuelles E1kv-Formular und fachkundige Beratung heranziehen.</p><div><a href="https://www.oekb.at/kapitalmarkt-services/unser-datenangebot/fonds/steuerdaten.html" target="_blank" rel="noreferrer">OeKB Steuerdaten</a><a href="https://service.bmf.gv.at/service/anwend/formulare/show_mast.asp?Typ=SM&__ClFRM_STICHW_ALL=E1kv" target="_blank" rel="noreferrer">BMF E1kv</a></div></footer>
   </main>;
 }

@@ -10,6 +10,17 @@ export type OekbReport = {
   validUntil: string | null;
 };
 
+export type OekbReportHistoryItem = Pick<OekbReport, "reportId" | "reportDate" | "fundName">;
+
+export type OekbReportPrediction = {
+  expectedDate: string;
+  windowStart: string;
+  windowEnd: string;
+  confidence: "high" | "medium" | "low";
+  sampleSize: number;
+  typicalIntervalDays: number;
+};
+
 export type OekbAutomaticExtraction = OekbExtraction & {
   reportId: string;
   reportedDistributionPerUnit: number | null;
@@ -98,6 +109,60 @@ export function selectAnnualReport(reports: OekbReport[], isin: string, taxYear?
     .filter((report) => !taxYear || report.reportDate.startsWith(`${taxYear}-`))
     .sort((a, b) => b.reportDate.localeCompare(a.reportDate) || Number(b.reportId) - Number(a.reportId));
   return candidates[0] ?? null;
+}
+
+export function annualReportHistory(reports: OekbReport[], isin: string): OekbReportHistoryItem[] {
+  const newestByDate = new Map<string, OekbReport>();
+  for (const report of reports) {
+    if (report.isin !== isin.toUpperCase() || !report.annual) continue;
+    const existing = newestByDate.get(report.reportDate);
+    if (!existing || Number(report.reportId) > Number(existing.reportId)) newestByDate.set(report.reportDate, report);
+  }
+  return [...newestByDate.values()]
+    .sort((a, b) => b.reportDate.localeCompare(a.reportDate))
+    .slice(0, 8)
+    .map(({ reportId, reportDate, fundName }) => ({ reportId, reportDate, fundName }));
+}
+
+const DAY_MS = 86_400_000;
+const isoDate = (date: Date) => date.toISOString().slice(0, 10);
+const median = (values: number[]) => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+};
+
+export function predictNextAnnualReport(reports: OekbReport[], isin: string): OekbReportPrediction | null {
+  const history = annualReportHistory(reports, isin)
+    .map((report) => new Date(`${report.reportDate}T00:00:00Z`))
+    .filter((date) => Number.isFinite(date.getTime()))
+    .sort((a, b) => a.getTime() - b.getTime());
+  if (history.length < 2) return null;
+
+  const recent = history.slice(-6);
+  const intervals = recent.slice(1).map((date, index) => Math.round((date.getTime() - recent[index].getTime()) / DAY_MS));
+  const plausibleIntervals = intervals.filter((days) => days >= 250 && days <= 480);
+  if (plausibleIntervals.length === 0) return null;
+
+  const typicalIntervalDays = median(plausibleIntervals);
+  const deviations = plausibleIntervals.map((days) => Math.abs(days - typicalIntervalDays));
+  const medianDeviation = median(deviations);
+  const windowDays = Math.min(60, Math.max(14, Math.round(medianDeviation * 2 + 7)));
+  const expected = new Date(recent.at(-1)!.getTime() + typicalIntervalDays * DAY_MS);
+  const confidence = plausibleIntervals.length >= 3 && medianDeviation <= 15
+    ? "high"
+    : plausibleIntervals.length >= 2 && medianDeviation <= 35
+      ? "medium"
+      : "low";
+
+  return {
+    expectedDate: isoDate(expected),
+    windowStart: isoDate(new Date(expected.getTime() - windowDays * DAY_MS)),
+    windowEnd: isoDate(new Date(expected.getTime() + windowDays * DAY_MS)),
+    confidence,
+    sampleSize: recent.length,
+    typicalIntervalDays,
+  };
 }
 
 function findPair(rows: string[][], label: string): string | null {

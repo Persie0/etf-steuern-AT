@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calculateEtfTax } from "../lib/tax.ts";
+import { calculateCorrectedCostBasis, calculateEtfTax } from "../lib/tax.ts";
 
 const base = {
   status: "reporting" as const,
@@ -48,3 +48,20 @@ test("separates sale gains and losses", () => {
   assert.equal(loss.kz892, 110);
 });
 
+test("converts USD sale proceeds and fees with the sale-date EUR rate", () => {
+  const result = calculateEtfTax({ ...base, distributionsPerUnit: 0, deemedIncomePerUnit: 0, creditableTaxPerUnit: 0, saleProceeds: 1000, saleCostBasis: 700, saleFees: 10, saleFxRate: 0.9 });
+  assert.equal(result.kz994, 191);
+  assert.equal(result.kz892, 0);
+});
+
+test("carries OeKB acquisition-cost corrections forward only through the sale date", () => {
+  const ledger = calculateCorrectedCostBasis(1000, [
+    { taxYear: "2024", reportDate: "2024-06-10", amount: 40 },
+    { taxYear: "2025", reportDate: "2025-06-12", amount: -10 },
+    { taxYear: "2026", reportDate: "2026-06-11", amount: 25 },
+  ], "2025-12-31");
+  assert.equal(ledger.totalCorrection, 30);
+  assert.equal(ledger.correctedCostBasis, 1030);
+  assert.equal(ledger.eligibleCorrections.length, 2);
+  assert.equal(ledger.excludedCorrections.length, 1);
+});

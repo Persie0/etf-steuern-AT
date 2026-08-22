@@ -43,4 +43,8 @@ test("renders development preview metadata", async () => {
   assert.match(html, /Anschaffungskosten-Verlauf/);
   assert.match(html, /Verkaufs-Anschaffungskosten übernehmen/);
   assert.match(html, /So gehst du in den Folgejahren vor/);
+  assert.match(html, /Vom ETF-Kauf bis zum Verkauf/);
+  assert.match(html, /Kauf, drei Jahre halten, dann verkaufen/);
+  assert.match(html, /20 ETF-Anteile × 100 € = 2.000 €/);
+  assert.match(html, /Zum ETF-Rechner/);
 });

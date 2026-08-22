@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { calculateCorrectedCostBasis, calculateEtfTax, FundStatus } from "../lib/tax";
 import type { CostBasisCorrection } from "../lib/tax";
+import { parseEditableNumber } from "../lib/editable-number";
 import { OekbExtraction, parseOekbTextLocally } from "../lib/oekb-extractor";
 import type { OekbReportHistoryItem, OekbReportPrediction } from "../lib/oekb-csv";
 
@@ -123,13 +124,38 @@ function Info({ children }: { children: React.ReactNode }) {
 }
 
 function Field({ label, value, onChange, suffix = "EUR", hint, step = "0.0001", allowNegative = false, imported = false, importLabel = "OeKB importiert", className = "" }: { label: string; value: number; onChange: (value: number) => void; suffix?: string; hint?: string; step?: string; allowNegative?: boolean; imported?: boolean; importLabel?: string; className?: string }) {
+  const [emptyDraft, setEmptyDraft] = useState(false);
+  const displayedValue: number | string = emptyDraft && value === 0 ? "" : value;
   return <label className={`field ${imported ? "field-imported" : ""} ${className}`.trim()}>
     <span className="field-label-row"><span>{label} {hint && <Info>{hint}</Info>}</span>{imported && <em className="imported-pill">✓ {importLabel}</em>}</span>
-    <div className="input-shell"><input inputMode="decimal" min={allowNegative ? undefined : "0"} step={step} type="number" value={value} onChange={(event) => onChange(Number(event.target.value) || 0)} /><em>{suffix}</em></div>
+    <div className="input-shell"><input inputMode="decimal" min={allowNegative ? undefined : "0"} step={step} type="number" value={displayedValue} onFocus={(event) => { if (displayedValue === 0) event.currentTarget.select(); }} onChange={(event) => { setEmptyDraft(event.target.value === ""); onChange(parseEditableNumber(event.target.value)); }} /><em>{suffix}</em></div>
   </label>;
 }
 
+function Tutorial({ onClose }: { onClose: () => void }) {
+  return <section className="tutorial-page" role="dialog" aria-modal="true" aria-labelledby="tutorial-title">
+    <header className="tutorial-topbar"><div className="brand"><span className="brand-mark">AT</span><span><strong>ETF-Steuer</strong><small>Praxis-Tutorial</small></span></div><button type="button" onClick={onClose}>Überspringen ×</button></header>
+    <div className="tutorial-shell">
+      <section className="tutorial-hero"><div><p className="eyebrow">Beim ersten Start · etwa 3 Minuten</p><h1 id="tutorial-title">Vom ETF-Kauf bis zum Verkauf.</h1><p>Du trägst nicht jeden Kurs und Steuerwert selbst zusammen. Das Tool lädt die OeKB-Jahresmeldung; deine wichtigste Aufgabe ist die richtige Stückzahl am jeweiligen Meldetag.</p><button type="button" onClick={() => document.querySelector("#tutorial-flow")?.scrollIntoView({ behavior: "smooth" })}>Tutorial starten <span>↓</span></button></div><aside><b>Das merkst du dir</b><p><strong>Jedes Jahr:</strong> OeKB-Meldung laden, Stückzahl am Meldetag eintragen, Ergebnis speichern.</p><p><strong>Beim Verkauf:</strong> Erlös und Datum ergänzen, fortgeschriebene Anschaffungskosten übernehmen.</p></aside></section>
+
+      <section className="tutorial-flow" id="tutorial-flow" aria-label="ETF im Tool hinzufügen"><div className="tutorial-section-heading"><span>01</span><div><p className="eyebrow">Erste Position</p><h2>So fügst du einen ETF hinzu</h2></div></div><div className="tutorial-steps"><article><span>1</span><h3>ISIN eingeben</h3><p>Zum Beispiel <code>IE00B4L5Y983</code>. Wähle das Steuerjahr und tippe auf „ETF & OeKB laden“.</p></article><article><span>2</span><h3>Meldetag prüfen</h3><p>Das Tool zeigt die offizielle Jahresmeldung und den steuerlichen Stichtag deutlich an.</p></article><article><span>3</span><h3>Stückzahl eintragen</h3><p>Nimm aus deinem Depotauszug den Bestand an genau diesem Meldetag — nicht den heutigen Bestand.</p></article><article><span>4</span><h3>Speichern</h3><p>Steuer, E1kv-Kennzahlen und AK-Korrektur werden berechnet und im lokalen Portfolio abgelegt.</p></article></div></section>
+
+      <section className="tutorial-example"><div className="tutorial-section-heading light"><span>02</span><div><p className="eyebrow">Durchgerechnetes Beispiel</p><h2>Kauf, drei Jahre halten, dann verkaufen</h2><p>Vereinfachte Beispielwerte zur Erklärung — deine echten Beträge kommen aus der OeKB und deinem Broker.</p></div></div><div className="example-start"><span>Kauf · Februar 2024</span><strong>20 ETF-Anteile × 100 € = 2.000 € Anschaffungskosten</strong><p>Diese 2.000 € trägst du einmal als ursprüngliche Anschaffungskosten ein.</p></div><div className="example-timeline">
+        <article><div className="timeline-year"><b>2024</b><span>1. Meldung</span></div><div><h3>20 Stück am Meldetag</h3><p>OeKB-Korrektur im Beispiel: <b>+1,10 € je Anteil</b></p><small>20 × 1,10 € = <strong>+22 €</strong></small></div><strong className="timeline-total">AK 2.022 €</strong></article>
+        <article><div className="timeline-year"><b>2025</b><span>2. Meldung</span></div><div><h3>Weiterhin 20 Stück</h3><p>OeKB-Korrektur im Beispiel: <b>+1,50 € je Anteil</b></p><small>20 × 1,50 € = <strong>+30 €</strong></small></div><strong className="timeline-total">AK 2.052 €</strong></article>
+        <article><div className="timeline-year"><b>2026</b><span>3. Meldung</span></div><div><h3>Weiterhin 20 Stück</h3><p>OeKB-Korrektur im Beispiel: <b>−0,25 € je Anteil</b></p><small>20 × −0,25 € = <strong>−5 €</strong></small></div><strong className="timeline-total">AK 2.047 €</strong></article>
+        <article className="timeline-sale"><div className="timeline-year"><b>2027</b><span>Verkauf</span></div><div><h3>Alle 20 Stück in USD verkauft</h3><p>2.600 USD Erlös, 10 USD Spesen, EUR/USD-Kurs 0,90</p><small>2.340 € − 9 € − 2.047 € = <strong>284 € Gewinn</strong></small></div><strong className="timeline-total">KZ 994</strong></article>
+      </div><div className="example-formula"><span>Ursprüngliche AK</span><b>2.000 €</b><i>+</i><span>3 Jahreskorrekturen</span><b>+47 €</b><i>=</i><span>Fortgeschriebene AK</span><b>2.047 €</b></div></section>
+
+      <section className="tutorial-routine"><div className="tutorial-section-heading"><span>03</span><div><p className="eyebrow">Deine Checkliste</p><h2>Was du wann erledigst</h2></div></div><div className="routine-grid"><article><span>Jedes Jahr</span><ul><li>Position für das neue Steuerjahr öffnen oder hinzufügen</li><li>OeKB-Jahresmeldung automatisch laden</li><li>Stückzahl am angezeigten Meldetag prüfen</li><li>Berechnung im Portfolio speichern</li><li>E1kv-Werte und CSV-Nachweis sichern</li></ul></article><article><span>Beim Verkauf</span><ul><li>Verkaufsdatum und Erlös in EUR oder USD eintragen</li><li>Verkaufsspesen ergänzen</li><li>Automatischen Kurs prüfen</li><li>Fortgeschriebene AK aus dem Verlauf übernehmen</li><li>Gewinn oder Verlust in den angezeigten E1kv-Feldern erfassen</li></ul></article></div><aside><b>Bei Teilverkäufen</b><p>Nur die Anschaffungskosten und Jahreskorrekturen der tatsächlich verkauften Anteile verwenden. Die restlichen Anteile behalten ihre verbleibende Kostenbasis.</p></aside></section>
+
+      <section className="tutorial-finish"><span>✓</span><div><h2>Du bist bereit.</h2><p>Das Tutorial kannst du später jederzeit über „Tutorial“ in der Navigation erneut öffnen.</p></div><button type="button" onClick={onClose}>Zum ETF-Rechner →</button></section>
+    </div>
+  </section>;
+}
+
 export default function EtfTaxAssistant() {
+  const [showTutorial, setShowTutorial] = useState(true);
   const [identifier, setIdentifier] = useState("IE00B4L5Y983");
   const [taxYear, setTaxYear] = useState(currentTaxYear);
   const [status, setStatus] = useState<FundStatus>("reporting");
@@ -179,6 +205,7 @@ export default function EtfTaxAssistant() {
         } catch { /* Ignore broken local drafts. */ }
       }
       setGeminiKey(localStorage.getItem("etf-steuer-gemini-key") ?? "");
+      setShowTutorial(localStorage.getItem("etf-steuer-tutorial-seen-v1") !== "1");
       setHydrated(true);
     }, 0);
     return () => window.clearTimeout(timer);
@@ -192,6 +219,12 @@ export default function EtfTaxAssistant() {
     if (saveGeminiKey && geminiKey) localStorage.setItem("etf-steuer-gemini-key", geminiKey);
     else if (!saveGeminiKey) localStorage.removeItem("etf-steuer-gemini-key");
   }, [geminiKey, saveGeminiKey]);
+  useEffect(() => {
+    if (!showTutorial) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, [showTutorial]);
 
   const result = useMemo(() => calculateEtfTax({
     status,
@@ -245,6 +278,11 @@ export default function EtfTaxAssistant() {
   const convertedSaleProceeds = values.saleProceeds * saleRate;
   const convertedSaleFees = values.saleFees * saleRate;
   const setField = (field: NumberField, value: number) => setValues((current) => ({ ...current, [field]: value }));
+
+  function closeTutorial() {
+    localStorage.setItem("etf-steuer-tutorial-seen-v1", "1");
+    setShowTutorial(false);
+  }
 
   function resetEditor() {
     setIdentifier(""); setTaxYear(currentTaxYear); setStatus("reporting"); setValues(initialValues);
@@ -515,10 +553,10 @@ export default function EtfTaxAssistant() {
     const anchor = document.createElement("a"); anchor.href = url; anchor.download = portfolioForYear.length > 0 ? `ETF-Portfolio-Steuer-${taxYear}.csv` : `ETF-Steuer-${taxYear}-${identifier || "Auswertung"}.csv`; anchor.click(); URL.revokeObjectURL(url);
   }
 
-  return <main>
+  return <>{showTutorial && <Tutorial onClose={closeTutorial} />}<main>
     <header className="topbar">
       <a className="brand" href="#top" aria-label="ETF-Steuerassistent Startseite"><span className="brand-mark">AT</span><span><strong>ETF-Steuer</strong><small>Assistent Österreich</small></span></a>
-      <nav aria-label="Hauptnavigation"><a href="#rechner">Rechner</a><a href="#finanzonline">FinanzOnline</a><a href="#wissen">Wissen</a></nav>
+      <nav aria-label="Hauptnavigation"><button type="button" onClick={() => setShowTutorial(true)}>Tutorial</button><a href="#rechner">Rechner</a><a href="#finanzonline">FinanzOnline</a><a href="#wissen">Wissen</a></nav>
       <span className="privacy-pill"><span /> Lokal gespeichert</span>
     </header>
 
@@ -625,5 +663,5 @@ export default function EtfTaxAssistant() {
     <section className="knowledge" id="wissen"><div><p className="eyebrow">Kurz erklärt</p><h2>Was der Rechner für dich trennt</h2></div><div className="knowledge-grid"><article><span>01</span><h3>Ausschüttungen</h3><p>Tatsächlich ausbezahlte, steuerpflichtige Fondserträge landen bei einem Auslandsdepot in KZ 898.</p></article><article><span>02</span><h3>Thesaurierung</h3><p>Auch ein ETF ohne Auszahlung kann ausschüttungsgleiche Erträge erzeugen. Dafür ist KZ 937 vorgesehen.</p></article><article><span>03</span><h3>Verkauf</h3><p>Gewinn oder Verlust entsteht auf Basis der steuerlich fortgeschriebenen Anschaffungskosten.</p></article></div></section>
     <section className="following-years" id="folgejahre"><div className="following-intro"><p className="eyebrow">Fortführung statt Neustart</p><h2>So gehst du in den Folgejahren vor</h2><p>Jede OeKB-Jahresmeldung ist ein weiterer Baustein deiner steuerlichen Kostenbasis. Das Portfolio speichert die Schritte lokal und führt sie je ISIN zusammen.</p></div><ol><li><span>1</span><div><b>Neue Jahresmeldung laden</b><p>Öffne die Position im jeweiligen Steuerjahr. Fehlt die Meldung noch, bleibt sie im Meldungs-Tracker vorgemerkt.</p></div></li><li><span>2</span><div><b>Stückzahl am Meldetag eintragen</b><p>Die Korrektur wird mit genau dem Bestand berechnet, den du am veröffentlichten Stichtag hattest.</p></div></li><li><span>3</span><div><b>Jahreskorrektur speichern</b><p>Positive Beträge erhöhen, negative vermindern die Anschaffungskosten. CSV und OeKB-Nachweis aufbewahren.</p></div></li><li><span>4</span><div><b>Beim Verkauf bis zum Verkaufsdatum fortschreiben</b><p>Ursprüngliche Kosten plus alle davor veröffentlichten Korrekturen bilden die Verkaufsbasis. Spätere Meldungen werden ausgeschlossen.</p></div></li><li><span>5</span><div><b>Teilverkäufe sauber zuordnen</b><p>Nur Kosten und Korrekturen der verkauften Anteile verwenden; verbleibende Anteile mit ihrer Restbasis weiterführen.</p></div></li></ol><aside><b>Wichtig</b><p>Die automatische Fortschreibung ersetzt keine Depot-Losrechnung oder individuelle Steuerberatung. Besonders bei mehreren Käufen, Teilverkäufen, Depotüberträgen und abweichenden Broker-Abrechnungen die Zuordnung prüfen.</p></aside></section>
     <footer><div className="brand footer-brand"><span className="brand-mark">AT</span><span><strong>ETF-Steuer</strong><small>Assistent Österreich</small></span></div><p>Rechenhilfe für österreichische Privatanleger · Keine Steuerberatung. Im Zweifel OeKB-Meldung, aktuelles E1kv-Formular und fachkundige Beratung heranziehen.</p><div><a href="https://www.oekb.at/kapitalmarkt-services/unser-datenangebot/fonds/steuerdaten.html" target="_blank" rel="noreferrer">OeKB Steuerdaten</a><a href="https://service.bmf.gv.at/service/anwend/formulare/show_mast.asp?Typ=SM&__ClFRM_STICHW_ALL=E1kv" target="_blank" rel="noreferrer">BMF E1kv</a></div></footer>
-  </main>;
+  </main></>;
 }

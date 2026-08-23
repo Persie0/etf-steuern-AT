@@ -1,0 +1,34 @@
+.trade-type.dividend {
+  background: #e8f0f4;
+  color: #315f77;
+}
+
+.trade-type.tax {
+  background: #fff0e9;
+  color: #9b503a;
+}
+
+.trade-type.tax_refund {
+  background: #e8f3e8;
+  color: #337044;
+}
+
+.trade-type.fee {
+  background: #f2edf5;
+  color: #725482;
+}
+
+.trade-type.fee_refund {
+  background: #edf4ef;
+  color: #3e7051;
+}
+
+.trade-type.delivery_in {
+  background: #e3f2e9;
+  color: #24684d;
+}
+
+.trade-type.delivery_out {
+  background: #fff0e9;
+  color: #a3573e;
+}

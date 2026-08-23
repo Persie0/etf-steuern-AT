@@ -65,7 +65,7 @@ const netAmountLabels = [
 ];
 const grossAmountLabels = [/Bruttoaussch.ttung/i, /Bruttothesaurierung/i, /Bruttobetrag/i, /Gross amount/i, /Kurswert/i];
 const taxLabels = [/Einbeh\.\s*(?:Steuer|KESt|SichSt)/i, /Kapitalertragsteuer/i, /Kapitalertragsteuer \(KESt\)/i, /Quellensteuer/i, /Withholding tax/i];
-const feeLabels = [/Provision/i, /Eigene Spesen/i, /Fremde Spesen/i, /Transaktionsentgelt/i, /Orderentgelt/i, /Serviceentgelt/i, /Depotgeb.hr/i, /Geb.hr/i, /Fee/i];
+const feeLabels = [/Provision/i, /Eigene Spesen/i, /Fremde Spesen/i, /Transaktionsentgelt/i, /Orderentgelt/i, /Serviceentgelt/i, /Depotgeb.hr/i, /\bGeb.hr\b/i, /\bFee\b/i];
 
 const brokerDefinitions: BrokerDefinition[] = [
   { broker: "Flatex", identifiers: [/\bbiw AG\b/i, /\bFinTech Group Bank AG\b/i, /\bflatex Bank AG\b/i, /\bflatexDEGIRO Bank (?:AG|SE)\b/i, /\bflatex\b/i] },

@@ -1,4 +1,4 @@
-import type { BrokerTransaction } from "./broker-transactions";
+import type { BrokerTransaction, BrokerTransactionType } from "./broker-transactions";
 
 export const backupFormat = "etf-steuerassistent-at" as const;
 export const backupVersion = 1 as const;
@@ -26,12 +26,28 @@ export function createAppBackup<TPortfolio, TValues>(data: AppBackup<TPortfolio,
   return JSON.stringify({ format: backupFormat, version: backupVersion, exportedAt: new Date().toISOString(), data }, null, 2);
 }
 
+const transactionTypes = new Set<BrokerTransactionType>([
+  "buy", "sell", "dividend", "tax", "tax_refund", "fee", "fee_refund", "delivery_in", "delivery_out",
+]);
+const holdingTypes = new Set<BrokerTransactionType>(["buy", "sell", "delivery_in", "delivery_out"]);
+
+function validNullableNumber(value: unknown): boolean {
+  return value === undefined || value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
 function validTransaction(value: unknown): value is BrokerTransaction {
   if (!value || typeof value !== "object") return false;
   const item = value as Partial<BrokerTransaction>;
-  return typeof item.id === "string" && typeof item.sourceId === "string" && typeof item.sourceFile === "string"
-    && (item.type === "buy" || item.type === "sell") && /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(item.isin ?? "")
-    && /^\d{4}-\d{2}-\d{2}$/.test(item.date ?? "") && typeof item.units === "number" && Number.isFinite(item.units) && item.units > 0;
+  if (typeof item.id !== "string" || typeof item.sourceId !== "string" || typeof item.sourceFile !== "string") return false;
+  if (!transactionTypes.has(item.type as BrokerTransactionType)) return false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(item.date ?? "")) return false;
+  if (item.isin !== null && item.isin !== undefined && !/^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(item.isin)) return false;
+  if (!validNullableNumber(item.units) || (typeof item.units === "number" && item.units < 0)) return false;
+  if (!validNullableNumber(item.amount) || !validNullableNumber(item.grossAmount) || !validNullableNumber(item.taxAmount) || !validNullableNumber(item.feeAmount) || !validNullableNumber(item.exchangeRate)) return false;
+  if (holdingTypes.has(item.type as BrokerTransactionType)) {
+    if (!item.isin || typeof item.units !== "number" || item.units <= 0) return false;
+  }
+  return true;
 }
 
 export function parseAppBackup<TPortfolio = unknown, TValues = unknown>(raw: string): AppBackup<TPortfolio, TValues> {

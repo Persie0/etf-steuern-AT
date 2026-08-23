@@ -13,14 +13,24 @@ Steuerwerte je Anteil und berechnet daraus die relevanten E1kv-Kennzahlen.
 - mehrere gehaltene oder verkaufte ETFs und E1kv-Gesamtsummen je Steuerjahr
 - Meldungs-Tracker und Prognose des nächsten OeKB-Meldetags
 - Verkaufserlöse in EUR oder USD und jahresübergreifender Anschaffungskosten-Verlauf
-- lokaler PDF-Import von Kauf-/Verkaufsabrechnungen mit historischem Bestand am OeKB-Meldetag
-- vollständiges JSON-Backup und strukturierter Excel-Export
+- lokaler, Portfolio-Performance-artiger PDF-Import für Käufe, Verkäufe, Dividenden/Ausschüttungen, Steuern und Steuererstattungen, Gebühren sowie Depot-Ein-/Auslieferungen
+- historischer Bestand am OeKB-Meldetag aus bestandswirksamen Käufen, Verkäufen und Depotüberträgen; reine Ertrags-/Steuerereignisse verändern den Bestand nicht
+- getrennte Erfassung von Netto-/Bruttobetrag, Steuer, Gebühren und Devisenkurs soweit im Brokerbeleg vorhanden
+- vollständiges JSON-Backup und strukturierter Excel-Export inklusive Broker-Ereignissen
 - ausführliches Praxis-Tutorial und kontextbezogene Begriffserklärungen
 
 PDFs, Portfolio und Rechnerdaten bleiben im Browser. Der optionale Gemini-BYOK-
 Schlüssel wird nicht in Backups exportiert. Der PDF-Parser ist an das testbare
-Extractor-Prinzip von Portfolio Performance angelehnt; erkannte Transaktionen
-müssen wegen möglicher Änderungen an Broker-Layouts kontrolliert werden.
+Extractor-Prinzip von Portfolio Performance angelehnt: Broker werden zuerst erkannt,
+danach Dokumenttypen und begrenzte Belegblöcke. Unterstützt werden nur eindeutig
+erkannte Pflichtfelder; erkannte Transaktionen müssen wegen möglicher Änderungen an
+Broker-Layouts kontrolliert werden.
+
+Für die ETF-Steuerberechnung werden bewusst nicht sämtliche Portfolio-Performance-
+Kontobewegungen nachgebaut. Reine Ein-/Auszahlungen des Verrechnungskontos sind für
+den historischen ETF-Bestand nicht erforderlich. Sinnvolle Wertpapier- und
+Steuerereignisse werden dagegen im lokalen Transaktionsjournal und Excel-Nachweis
+aufbewahrt.
 
 Die Anwendung ist eine Rechenhilfe und keine Steuerberatung. OeKB-Meldung,
 Depotauszug, Anschaffungslos-Zuordnung, Umrechnungskurs und aktuelles E1kv-Formular

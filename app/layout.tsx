@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./broker-events.css";
 
 export const metadata: Metadata = {
   title: "ETF-Steuerassistent Österreich",

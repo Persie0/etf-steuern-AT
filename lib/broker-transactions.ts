@@ -39,16 +39,18 @@ const isinPattern = /\b[A-Z]{2}[A-Z0-9]{9}[0-9]\b/;
 const datePattern = /\b([0-3]?\d)[.\/-]([01]?\d)[.\/-](20\d{2})\b/;
 const shortDatePattern = /\b([0-3]?\d)[.\/-]([01]?\d)[.\/-](\d{2})\b/;
 const isoDatePattern = /\b(20\d{2})-([01]\d)-([0-3]\d)\b/;
-const buySellPattern = /\b(Wertpapierabrechnung\s+(Kauf|Verkauf)|Wertpapierkauf|Wertpapierverkauf|Kauf|Verkauf|Buy|Sell|Purchase|Sale|Execution\s+(Buy|Sell))\b/i;
+const buySellPattern = /(Wertpapierabrechnung\s+(Kauf|Verkauf)|Wertpapierkauf|Wertpapierverkauf|\bKauf\b|\bVerkauf\b|\bBuy\b|\bSell\b|\bPurchase\b|\bSale\b|Execution\s+(Buy|Sell)|Market-Order\s*(?:Buy|Sell|Achat|Vente|Acquisto|Vendita|Compra|Venta|Kopen|Verkoop)|\bAchat\b|\bVente\b|\bAcquisto\b|\bVendita\b|\bCompra\b|\bVenta\b|\bKopen\b|\bVerkoop\b|Sparplanausf.hrung|Round\s*up|investissement programm.|piano di accumulo|Saveback)/i;
 const dividendDocumentPattern = /\b(Ertragsmitteilung|Dividendengutschrift|Dividendenabrechnung|Dividende|Aussch.ttung|Ertragsgutschrift|Dividend payment|Income payment)\b/i;
 const taxDocumentPattern = /\b(Steuerbelastung|Steuerabrechnung|Steuergutschrift|Steuererstattung|Tax refund|Tax charge|Vorabpauschale|Bruttothesaurierung)\b/i;
 const feeDocumentPattern = /\b(Depotgeb.hr|Depotentgelt|Geb.hrenbelastung|Geb.hrengutschrift|Geb.hrenerstattung|Serviceentgelt|Service fee|Fee refund)\b/i;
 const deliveryInPattern = /\b(Depoteinlieferung|Depot.?bertrag\s+(?:Eingang|eingehend)|Einlieferung|Einbuchung|Delivery In|Transfer In|Stockdividende|St.ckdividende|Gratisaktien)\b/i;
 const deliveryOutPattern = /\b(Depotauslieferung|Depot.?bertrag\s+(?:Ausgang|ausgehend)|Auslieferung|Ausbuchung|Delivery Out|Transfer Out)\b/i;
-const unitLabel = "(?:St(?:\\.|ück|ueck)?|Stk\\.?|Anzahl|Nominale|Quantity|Shares|Units)";
+const unitLabel = "(?:St(?:\\.|ück|ueck|.?ck)?|Stk\\.?|Anzahl|Nominale|Quantity|Quantit.|Cantidad|Quantità|Shares|Units)";
+const unitSuffix = "(?:St\\.|Stk\\.?|St.ck|Anteile|Shares|Units|Pcs?\\.?|pc\\.?|Pz\\.?|unit.|titre\\(s\\)|t.t\\.?)";
+const unitNumber = "[0-9][0-9.']*(?:[,.][0-9]+)?";
 const unitsPatterns = [
-  new RegExp(`\\b(?:Ausgef.hrte St.ckzahl|Executed quantity|Ausgef.hrt|${unitLabel})\\s*[:\\-]?\\s*([0-9][0-9.'\\s]*(?:[,.][0-9]+)?)\\s*(?:St\\.|Stk\\.?|St.ck|Anteile|Shares|Units)?\\b`, "i"),
-  /\b([0-9][0-9.'\s]*(?:[,.][0-9]+)?)\s*(?:St\.|Stk\.?|St.ck|Anteile|Shares|Units)\b/i,
+  new RegExp(`\\b(${unitNumber})\\s*${unitSuffix}(?=\\s|$)`, "i"),
+  new RegExp(`\\b(?:Ausgef.hrte St.ckzahl|Executed quantity|Ausgef.hrt|davon ausgef\\.|${unitLabel})\\s*[:\\-]?\\s*(?:${unitLabel}\\s*)?(${unitNumber})\\s*(?:${unitSuffix})?(?=\\s|$)`, "i"),
 ];
 const currencies = "EUR|USD|CHF|GBP|CAD|AUD|JPY|SEK|NOK|DKK|PLN|CZK|HUF";
 const netAmountLabels = [
@@ -57,10 +59,15 @@ const netAmountLabels = [
   /Gesamtbetrag/i,
   /Auszahlungsbetrag/i,
   /Gutschrift/i,
+  /Belastung/i,
+  /Debit/i,
+  /Credit/i,
+  /Addebito/i,
   /Zu Ihren Lasten/i,
   /Zu Ihren Gunsten/i,
   /Net(?:to)? amount/i,
   /Total/i,
+  /Totale/i,
   /Amount/i,
 ];
 const grossAmountLabels = [/Bruttoaussch.ttung/i, /Bruttothesaurierung/i, /Bruttobetrag/i, /Gross amount/i, /Kurswert/i];
@@ -152,12 +159,15 @@ function normalizeDate(raw: string): string | null {
 
 function identifyBroker(text: string): BrokerDefinition | null {
   const normalized = normalizeLigatures(text);
+  if (/Transaktions.bersicht|Transaction Overview|Transactions|Transacties|Transacciones|Transazioni|Transakcje/i.test(normalized) && /\bDEGIRO\b/i.test(normalized)) {
+    return brokerDefinitions.find((definition) => definition.broker === "DEGIRO") ?? null;
+  }
   return brokerDefinitions.find((definition) => definition.identifiers.some((pattern) => pattern.test(normalized))) ?? null;
 }
 
 function buySellType(value: string): "buy" | "sell" | null {
-  if (/Verkauf|Sell|Sale/i.test(value)) return "sell";
-  if (/Kauf|Buy|Purchase/i.test(value)) return "buy";
+  if (/Verkauf|Sell|Sale|Vente|Vendita|Venta|Verkoop/i.test(value)) return "sell";
+  if (/Kauf|Buy|Purchase|Achat|Acquisto|Compra|Kopen|Sparplanausf.hrung|Round\s*up|investissement programm.|piano di accumulo|Saveback/i.test(value)) return "buy";
   return null;
 }
 
@@ -189,7 +199,7 @@ function pickDateByLabels(lines: string[], labels: string[]): string | null {
 }
 
 function pickDate(lines: string[], typeIndex = 0): string | null {
-  const labelled = pickDateByLabels(lines, ["Handelstag", "Schlusstag", "Ausf.hrungstag", "Trade date", "Execution date", "Zuflusstag", "Valuta", "Buchungstag", "Gesch.ftsdatum", "Orderdatum", "Datum", "Extag"]);
+  const labelled = pickDateByLabels(lines, ["Handelstag", "Schlusstag", "Ausf.hrungstag", "Ausf.hrung", "Execution", "Trade date", "Execution date", "Zuflusstag", "Valuta", "Buchungstag", "Gesch.ftsdatum", "Orderdatum", "Datum", "Date", "Extag"]);
   if (labelled) return labelled;
   for (let distance = 0; distance < lines.length; distance += 1) {
     for (const index of [typeIndex + distance, typeIndex - distance]) {
@@ -419,6 +429,104 @@ function parseFlatexIncome(lines: string[], sourceFile: string): BrokerTransacti
   return [];
 }
 
+/**
+ * DEGIRO transaction overviews are tables rather than one document per trade.
+ * Portfolio Performance likewise treats every row as its own transaction and
+ * derives buy/sell from the sign of the quantity. Keep this deliberately
+ * separate from the generic prose parser so page headers and cash-account rows
+ * cannot be mistaken for securities trades.
+ */
+function parseDegiroTransactionOverview(lines: string[], sourceFile: string): BrokerTransactionDraft[] {
+  if (!lines.some((line) => /Transaktions.bersicht|Transactions|Transacties|Transacciones|Transazioni|Transakcje|Transa..es/i.test(line))) return [];
+  const transactions: BrokerTransactionDraft[] = [];
+
+  for (const line of lines) {
+    const prefix = line.match(/^(\d{2}[-./]\d{2}[-./]\d{4})\s+\d{2}:\d{2}\s+(.+?)\s+([A-Z]{2}[A-Z0-9]{9}[0-9])\s+(.+)$/);
+    if (!prefix) continue;
+    const date = normalizeDate(prefix[1]);
+    if (!date) continue;
+
+    const tail = prefix[4].trim();
+    const firstCurrency = tail.search(new RegExp(`\\b(?:${currencies})\\b`, "i"));
+    if (firstCurrency < 0) continue;
+    const beforeCurrency = tail.slice(0, firstCurrency).trim().split(/\s+/);
+    const numericBeforeCurrency = beforeCurrency.filter((token) => /^[+\-]?[0-9][0-9.,']*$/.test(token));
+    if (numericBeforeCurrency.length === 0) continue;
+
+    // Normal shares: "XET XETA 6 62.06 EUR". Some derivatives use
+    // "ERX -3 EUR 30,00 EUR", where quantity is directly before currency.
+    const quantityToken = numericBeforeCurrency.length >= 2
+      ? numericBeforeCurrency[numericBeforeCurrency.length - 2]
+      : numericBeforeCurrency[0];
+    const signedUnits = parseLocaleNumber(quantityToken);
+    if (signedUnits === null || signedUnits === 0) continue;
+
+    const moneyMatches = [...line.matchAll(new RegExp(`([+\\-]?[0-9][0-9.'\\s]*(?:[,.][0-9]+)?)\\s+(${currencies})\\b`, "gi"))];
+    const lastMoney = moneyMatches.at(-1);
+    const amountValue = lastMoney ? parseLocaleNumber(lastMoney[1]) : null;
+    const amount = lastMoney && amountValue !== null
+      ? { amount: Math.abs(amountValue), currency: lastMoney[2].toUpperCase(), raw: amountValue }
+      : null;
+    const units = Math.abs(signedUnits);
+    transactions.push(buildDraft(sourceFile, "DEGIRO", [line], {
+      type: signedUnits < 0 ? "sell" : "buy",
+      isin: prefix[3],
+      securityName: prefix[2].trim().slice(0, 160),
+      date,
+      units,
+      amount,
+      confidence: "high",
+    }));
+  }
+
+  return transactions;
+}
+
+function parseTradeRepublicSecurities(lines: string[], sourceFile: string): BrokerTransactionDraft[] {
+  const text = lines.join("\n");
+  if (!/Trade Republic/i.test(text) || !/(WERTPAPIERABRECHNUNG|SECURITIES SETTLEMENT|REGOLAMENTO TITOLI|LIQUIDACI.N DE VALORES|CONFIRMATION DE L.INVESTISSEMENT)/i.test(text)) return [];
+  if (/\b(?:Crypto|Krypto|Bitcoin|Ethereum)\b/i.test(text)) return [];
+
+  const isinIndexes = lines.flatMap((line, index) => isinPattern.test(line) ? [index] : []);
+  const transactions: BrokerTransactionDraft[] = [];
+  for (const isinIndex of isinIndexes) {
+    const isin = lines[isinIndex].match(isinPattern)?.[0];
+    if (!isin) continue;
+    const before = lines.slice(Math.max(0, isinIndex - 24), isinIndex);
+    const actionIndex = before.findLastIndex((line) => buySellPattern.test(line) || /(?:Ausf.hrung|execution|Ex.cution|Esecuzione).*(?:am|on|le|il|el d.a)/i.test(line));
+    const actionLine = actionIndex >= 0 ? before[actionIndex] : "";
+    let type = buySellType(actionLine);
+    if (!type && /(SPARPLAN|SAVINGS PLAN|SAVEBACK|ROUND UP|KINDERGELD|INVESTISSEMENT PROGRAMM.|PLAN D..PARGNE|PIANO DI ACCUMULO)/i.test(text)) type = "buy";
+    const date = normalizeDate(actionLine) ?? pickDate(before, Math.max(0, actionIndex));
+    if (!type || !date) continue;
+
+    const positionCandidates = before.slice(Math.max(0, before.length - 8)).reverse();
+    let position: { name: string; units: number } | null = null;
+    for (const line of positionCandidates) {
+      const unitMatch = unitsPatterns.map((pattern) => line.match(pattern)).find(Boolean);
+      const threeNumbers = line.match(new RegExp(`^(.+?)\\s+(${unitNumber})(?:\\s+${unitSuffix})?\\s+${unitNumber}\\s+(?:${currencies}|%)\\s+${unitNumber}\\s+(?:${currencies})$`, "i"));
+      const rawUnits = unitMatch?.[1] ?? threeNumbers?.[2] ?? null;
+      const units = rawUnits ? parseLocaleNumber(rawUnits) : null;
+      if (units !== null && units > 0) {
+        const name = threeNumbers?.[1] ?? line.slice(0, unitMatch?.index ?? 0).trim();
+        position = { name: name.trim().slice(0, 160), units };
+        break;
+      }
+    }
+    if (!position) continue;
+
+    const block = lines.slice(Math.max(0, isinIndex - 24), Math.min(lines.length, isinIndex + 14));
+    transactions.push(buildDraft(sourceFile, "Trade Republic", block, {
+      type,
+      isin,
+      securityName: position.name || pickSecurityName(lines, isinIndex, isin),
+      units: position.units,
+      date,
+    }));
+  }
+  return transactions;
+}
+
 function parseGenericBuySell(lines: string[], sourceFile: string, broker: string | null): BrokerTransactionDraft[] {
   const typeIndexes = lines.flatMap((line, index) => buySellPattern.test(line) ? [index] : []);
   const candidates: BrokerTransactionDraft[] = [];
@@ -561,20 +669,24 @@ export function parseBrokerPdfText(text: string, sourceFile: string): BrokerPdfP
   const lines = normalizeBrokerPdfText(text);
   const definition = identifyBroker(text);
   const broker = definition?.broker ?? null;
+  const unsupportedFlatexSavingsSummary = broker === "Flatex" && /Sammelabrechnung\s+aus/i.test(text);
   const warnings: string[] = [];
   const candidates: BrokerTransactionDraft[] = [];
 
-  if (broker === "Flatex") {
+  if (broker === "Flatex" && !unsupportedFlatexSavingsSummary) {
     candidates.push(...parseFlatexBuySell(lines, sourceFile));
     candidates.push(...parseFlatexIncome(lines, sourceFile));
   }
+  if (broker === "DEGIRO") candidates.push(...parseDegiroTransactionOverview(lines, sourceFile));
+  if (broker === "Trade Republic") candidates.push(...parseTradeRepublicSecurities(lines, sourceFile));
   candidates.push(...parseDeliveries(lines, sourceFile, broker));
-  if (!candidates.some((transaction) => transaction.type === "buy" || transaction.type === "sell")) candidates.push(...parseGenericBuySell(lines, sourceFile, broker));
+  if (!unsupportedFlatexSavingsSummary && !candidates.some((transaction) => transaction.type === "buy" || transaction.type === "sell")) candidates.push(...parseGenericBuySell(lines, sourceFile, broker));
   if (!candidates.some((transaction) => transaction.type === "dividend")) candidates.push(...parseGenericDividend(lines, sourceFile, broker));
   if (!candidates.some((transaction) => transaction.type === "tax" || transaction.type === "tax_refund")) candidates.push(...parseStandaloneTax(lines, sourceFile, broker));
   if (!candidates.some((transaction) => transaction.type === "fee" || transaction.type === "fee_refund")) candidates.push(...parseFeeDocument(lines, sourceFile, broker));
 
   const transactions = deduplicateTransactions(candidates);
+  if (unsupportedFlatexSavingsSummary) warnings.push("Flatex-Sammelabrechnungen aus Zahlungsplänen werden bewusst nicht automatisch importiert. Bitte die einzelnen Kauf-/Verkaufsabrechnungen oder eine DEGIRO-Transaktionsübersicht verwenden.");
   if (transactions.length === 0) {
     warnings.push("Kein vollständig unterstützter Broker-Beleg erkannt. Importiert werden nur Dokumente, deren Typ und Pflichtfelder eindeutig zusammenpassen.");
     if (broker) warnings.push(`${broker} wurde erkannt, das konkrete Dokumentlayout ist aber noch nicht unterstützt.`);

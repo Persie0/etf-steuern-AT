@@ -1,6 +1,6 @@
 import { strToU8, zipSync } from "fflate";
-import { brokerTransactionTypeLabels, holdingDeltaForTransaction } from "./broker-transactions";
-import type { BrokerTransaction } from "./broker-transactions";
+import { brokerTransactionTypeLabels, holdingDeltaForTransaction } from "./broker-transactions.ts";
+import type { BrokerTransaction } from "./broker-transactions.ts";
 
 type PortfolioRow = {
   identifier: string; taxYear: string; status: string; ownershipStatus: string; savedAt: string;

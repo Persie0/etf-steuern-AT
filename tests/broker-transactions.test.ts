@@ -23,6 +23,35 @@ test("parses an English IBKR sale confirmation", () => {
   assert.equal(result.transactions[0].currency, "USD");
 });
 
+test("imports every row of a DEGIRO transaction overview with signed quantities", () => {
+  const result = parseBrokerPdfText(`DEGIRO\nTransaktionsübersicht von 01-01-2021 bis 31-12-2021\nDatum Uhrzeit Produkt ISIN Börse Venue Anzahl Kurs Wert Gebühr Gesamt\n29-11-2021 16:46 ISHARES DJ EUROPE IE00B52VJ196 SWX XSWX 6 62.06 EUR -372.36 EUR -2.21 EUR -374.57 EUR\n26-05-2021 17:41 XIAOMI CORP. CL.B KYG9830T1067 FRA FRAB -300 3.045 EUR 913.50 EUR -9.13 EUR 904.37 EUR`, "degiro-transaktionen.pdf");
+  assert.equal(result.broker, "DEGIRO");
+  assert.deepEqual(result.transactions.map((transaction) => [transaction.type, transaction.isin, transaction.units, transaction.date]), [
+    ["buy", "IE00B52VJ196", 6, "2021-11-29"],
+    ["sell", "KYG9830T1067", 300, "2021-05-26"],
+  ]);
+});
+
+test("imports current Trade Republic savings-plan rows without confusing the price for units", () => {
+  const result = parseBrokerPdfText(`TRADE REPUBLIC BANK GMBH\nSECURITIES SETTLEMENT SAVINGS PLAN\nSavings plan execution on 16.05.2023 on the Lang & Schwarz Exchange.\nPOSITION QUANTITY AVERAGE RATE AMOUNT\nNASDAQ-100 UCITS ETF 0.016033 Pcs. 185.24 EUR 2.97 EUR\nISIN: LU1681038243\nTOTAL 2.97 EUR`, "trade-republic-savings-plan.pdf");
+  const transaction = result.transactions[0];
+  assert.equal(transaction.type, "buy");
+  assert.equal(transaction.isin, "LU1681038243");
+  assert.equal(transaction.units, 0.016033);
+  assert.equal(transaction.date, "2023-05-16");
+});
+
+test("imports a French Trade Republic savings-plan confirmation", () => {
+  const result = parseBrokerPdfText(`TRADE REPUBLIC BANK GMBH\nCONFIRMATION DE L'INVESTISSEMENT PROGRAMMÉ\nExécution de l'investissement programmé le 17/02/2025 sur Lang und Schwarz Exchange.\nPOSITION QUANTITÉ COURS MOYEN MONTANT\nBerkshire Hathaway (B) 0,216943 460,95 EUR 100,00 EUR\nISIN : US0846707026\nTOTAL 100,00 EUR`, "trade-republic-fr.pdf");
+  assert.deepEqual([result.transactions[0].type, result.transactions[0].units, result.transactions[0].date], ["buy", 0.216943, "2025-02-17"]);
+});
+
+test("does not guess transactions from unsupported flatex payment-plan summaries", () => {
+  const result = parseBrokerPdfText(`flatexDEGIRO Bank AG\nSammelabrechnung aus\nwir haben in 2025 folgende Transaktionen ausgeführt:\nAuftrags-Nr: 0003573956\nISIN: IE000716YHJ7\nBezeichnung: INVESCO FTSE ALL-WORLD UC\nK/V Buchtag Valuta Stücke/Nom. Ausf.-Kurs Betrag\nKauf 15.04.2025 17.04.2025 225,751073 5,8250 EUR 1.316,50 EUR`, "flatex-zahlungsplan.pdf");
+  assert.equal(result.transactions.length, 0);
+  assert.match(result.warnings.join(" "), /bewusst nicht automatisch importiert/);
+});
+
 test("parses modern flatex purchase including order fees", () => {
   const result = parseBrokerPdfText(`flatexDEGIRO Bank SE\nWertpapierabrechnung Kauf\nAuftragsdatum 15.01.2026\nNr.123456789/1 Kauf VANGUARD FTSE ALL-WORLD UCITS ETF (IE00BK5BQT80/A1JX52)\nAusgeführt : 29 St. Kurswert : 3.721,28 EUR\nProvision : 5,90 EUR\nHandelstag 16.01.2026\nEndbetrag EUR -3.727,18`, "flatex-kauf.pdf");
   const transaction = result.transactions[0];

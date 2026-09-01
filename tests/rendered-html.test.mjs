@@ -15,7 +15,9 @@ test("renders the production Next.js page", async () => {
   assert.match(html, /Broker-Abrechnungen importieren/);
   assert.match(html, /Vollständiges Backup/);
   assert.match(html, /Excel-Übersicht/);
-  assert.match(html, /Bestand am OeKB-Meldetag/);
+  assert.match(html, /Stückzahl eintragen/);
+  assert.match(html, /DEGIRO/);
+  assert.match(html, /Flatex-Sammelabrechnungen aus Zahlungsplänen/);
   assert.match(html, /Dein nächster Schritt/);
   assert.match(html, /Geführte Berechnung/);
   assert.match(html, /Automatisch übernommene OeKB-Werte/);

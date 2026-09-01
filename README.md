@@ -26,6 +26,21 @@ danach Dokumenttypen und begrenzte Belegblöcke. Unterstützt werden nur eindeut
 erkannte Pflichtfelder; erkannte Transaktionen müssen wegen möglicher Änderungen an
 Broker-Layouts kontrolliert werden.
 
+Die Kauf-/Verkaufslogik wurde gegen die anonymisierten Textbelege der
+Portfolio-Performance-Extractor für Flatex/FinTech Group, Baader/Scalable,
+Trade Republic, DEGIRO, DADAT, DKB, ING, comdirect, Consorsbank, onvista,
+easybank, Raiffeisen und Erste geprüft. DEGIRO-Transaktionsübersichten werden
+zeilenweise importiert; aktuelle Trade-Republic-Sparplan-, Saveback- und
+Round-up-Belege sowie deutsch-, englisch-, französisch-, italienisch-,
+spanisch- und niederländischsprachige Varianten werden berücksichtigt.
+
+Das ist keine vollständige Portierung aller Portfolio-Performance-Extractor.
+Insbesondere Scans, Krypto- und reine Kontobelege, manche Anleihe-/Derivate-
+Sonderfälle sowie Flatex-„Sammelabrechnungen aus“ Zahlungsplänen werden nicht
+geraten. Portfolio Performance besitzt außerdem keinen universellen
+IBKR-PDF-Extractor; einfache IBKR-Trade-Confirmations können über die generische
+Erkennung funktionieren, werden aber nicht als allgemein unterstützt beworben.
+
 Für die ETF-Steuerberechnung werden bewusst nicht sämtliche Portfolio-Performance-
 Kontobewegungen nachgebaut. Reine Ein-/Auszahlungen des Verrechnungskontos sind für
 den historischen ETF-Bestand nicht erforderlich. Sinnvolle Wertpapier- und
